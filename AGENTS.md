@@ -22,6 +22,7 @@ A short map for contributors and AI coding assistants.
 | `studio/usage.py` | The record of AI calls and tokens shown on the AI usage page |
 | `studio/jobs.py` | The video pipeline and the fair queue |
 | `studio/live.py` | Live recording and clipping |
+| `studio/picks.py` | Live Transcriber: moments (points), the stream kept around them (holds), clips cut from them, Edit |
 | `studio/transcribe.py`, `studio/asr_worker.py` | Speech to text, here or on a second machine |
 | `studio/render.py` | Cutting, layouts and captions (ffmpeg and Pillow) |
 | `studio/media.py` | Downloading (yt-dlp), probing, audio |

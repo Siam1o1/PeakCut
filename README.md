@@ -13,6 +13,10 @@ creator's live stream and clip the highlights while the stream is still running.
   renders each one with captions in one of three styles.
 - **Live clipping.** Records a stream into a rolling buffer and clips as it happens, using loudness, chat activity
   and the transcript.
+- **Live Transcriber.** Watch a stream's transcript as it is spoken, see the moments that could go viral with the
+  reason, and download any of them: choose how many seconds before the moment the clip starts and how long it is.
+  A minute either side of every moment is kept, so you can still cut it after the stream. Send any clip to the
+  editor to make it vertical, including a new layout with the gameplay on top and the streamer's facecam below.
 - **Workspaces per creator.** Channels, clip settings, posting rules and an activity log for each creator you clip.
 - **Posting.** Connect YouTube, Instagram and TikTok in one click, then queue or auto-post finished clips, with
   spacing and daily caps (see [DEPLOY.md](DEPLOY.md#connecting-youtube-instagram-and-tiktok) for the one-time setup).
