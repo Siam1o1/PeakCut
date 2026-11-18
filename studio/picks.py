@@ -149,10 +149,11 @@ def make_cut(job, pid, lead, length):
     if h["status"] != "ready":
         raise ValueError(h.get("error") or "This moment's video could not be kept.")
     start, end, note = plan_cut(p["t"], h["from"], h["to"], lead, length)
-    cut = {"id": _next_id(job, "next_cut", "cut"), "point": pid, "lead": round(p["t"] - start, 2),
-           "length": round(end - start, 2), "start": start, "end": end, "note": note, "status": "making",
-           "file": None, "error": None, "made_at": time.time()}
-    job.setdefault("cuts", []).append(cut)
+    with jobs._lock:                            # two quick clicks must not get the same id
+        cut = {"id": _next_id(job, "next_cut", "cut"), "point": pid, "lead": round(p["t"] - start, 2),
+               "length": round(end - start, 2), "start": start, "end": end, "note": note, "status": "making",
+               "file": None, "error": None, "made_at": time.time()}
+        job.setdefault("cuts", []).append(cut)
     jobs.save(job)
     jobs.submit_live(lambda: _encode_cut(job, p, cut))
     return cut
@@ -225,6 +226,8 @@ def edit_cut(job, cut_id, options):
     """Send a cut to the editor: it becomes a normal video of the same creator with one clip covering the whole cut,
     which is then made (captions, layout, hook) like any other clip and can be re-made and posted from there."""
     cut = cut_of(job, cut_id)
+    if cut["status"] == "error":
+        raise ValueError(cut.get("error") or "This clip could not be made. Make it again.")
     if cut["status"] != "ready":
         raise ValueError("This clip is still being made. Try again in a moment.")
     p = point_of(job, cut["point"])
@@ -243,7 +246,7 @@ def edit_cut(job, cut_id, options):
     meta = media.probe(dest)
     (Path(new["dir"]) / "words.json").write_text(json.dumps(words), encoding="utf-8")
     clip = {"id": "clip001", "start": 0.0, "end": round(meta["duration"], 2), "score": p["score"],
-            "reason": p["reason"], "hook": hook, "title": "", "description": "", "hashtags": [], "highlight_words": [],
+            "reason": p["reason"], "hook": hook, "title": new["source"]["name"], "description": "", "hashtags": [], "highlight_words": [],
             "category": "other", "style": style, "layout": layout, "status": "queued", "version": 0,
             "made_at": time.time()}
     if boxes:
@@ -251,7 +254,7 @@ def edit_cut(job, cut_id, options):
     new["source"]["path"] = str(dest)
     new.update(source_path=str(dest), status="done", stage="Made from a live moment", title=new["source"]["name"],
                uploader=job.get("uploader", ""), duration=meta["duration"], width=meta["width"],
-               height=meta["height"], clips=[clip], from_live={"job": job["id"], "cut": cut_id}, remake=["clip001"])
+               height=meta["height"], clips=[clip], from_live={"job": job["id"], "cut": cut_id})
     jobs.save(new)
     cut["edited"] = new["id"]
     jobs.save(job)
@@ -261,12 +264,11 @@ def edit_cut(job, cut_id, options):
         usage.set_context(new.get("creator"), title or "Live stream")
         d = brain.describe(text, title, up)
         for k in ("title", "description", "hashtags", "highlight_words", "category"):
-            clip[k] = d.get(k, clip[k])
+            if d.get(k) or k != "title":        # keep the job's name when the AI gives no title
+                clip[k] = d.get(k, clip[k])
         if not hook:
             clip["hook"] = d.get("hook", "")
         jobs.render_one(new, clip, words)
-        new.pop("remake", None)                 # made: nothing to pick up after a restart
-        jobs.save(new)
 
     jobs.submit(make)
     return new
