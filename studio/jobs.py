@@ -352,6 +352,8 @@ def request_render(jid, cid, changes: dict):
     for k in ("hook", "title", "description", "style", "layout"):
         if k in changes:
             new[k] = str(changes[k])[:{"hook": 60, "title": 100, "description": 2000}.get(k, 20)]
+    if "split" in changes:
+        new["split"] = render.clean_split(changes["split"])
     if new.get("style") not in render.STYLES:
         new["style"] = DEFAULTS["style"]
     if new.get("layout") not in render.LAYOUTS:
@@ -361,10 +363,19 @@ def request_render(jid, cid, changes: dict):
     _q.put(("clip", jid, cid))
 
 
+def queue_clip(jid, cid):
+    """Make one clip of a video on the worker, like a re-make."""
+    _q.put(("clip", jid, cid))
+
+
 def render_one(job, clip, words):
     d = Path(job["dir"])
     clip["status"] = "rendering"
     save(job)
+    if clip.get("layout") == "split" and not render.clean_split(clip.get("split")) and job.get("creator"):
+        boxes = render.clean_split((creators.get(job["creator"]) or {}).get("split"))
+        if boxes:
+            clip["split"] = boxes     # a copy: drawing new boxes later does not change this clip
     try:
         off = clip.get("src_offset", 0.0)
         src = Path(clip["src"]) if clip.get("src") else Path(job["source_path"])

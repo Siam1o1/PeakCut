@@ -36,5 +36,26 @@ out = render.render_clip(src, Path(os.environ["PEAKCUT_DATA"]) / "out", "c1",
 meta = media.probe(Path(os.environ["PEAKCUT_DATA"]) / "out" / out["file"])
 check("a split clip is rendered at 1080x1920", (out["layout"], meta["width"], meta["height"]), ("split", 1080, 1920))
 
+# ---- boxes saved on the creator
+from studio import creators, ctx, jobs
+ctx.set_uid("u_split1")
+cr = creators.create({"name": "Box Tester", "split": BOXES})
+check("a creator keeps their facecam boxes", creators.get(cr["id"])["split"], render.clean_split(BOXES))
+check("junk boxes are not kept", creators.update(cr["id"], {"split": {"cam": "x"}})["split"], None)
+creators.update(cr["id"], {"split": BOXES})
+job = jobs.create({"type": "file", "path": str(src), "name": "src.mp4"}, {"layout": "split"}, enqueue=False, creator=cr["id"])
+job.update(source_path=str(src), width=1280, height=720, duration=4.0, status="done",
+           clips=[{"id": "clip001", "start": 0.0, "end": 3.0, "score": 0, "hook": "", "title": "", "description": "",
+                   "hashtags": [], "highlight_words": [], "style": "bounce", "layout": "split", "status": "queued", "version": 0}])
+brain_fail = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("no AI in tests"))
+from studio import brain; brain.ask_ai = brain_fail
+jobs.render_one(job, job["clips"][0], [{"w": "hello", "s": 0.2, "e": 0.6}])
+c0 = job["clips"][0]
+check("a split clip with no boxes of its own uses the creator's", (c0["status"], c0.get("split"), c0.get("layout")),
+      ("done", render.clean_split(BOXES), "split"))
+jobs._q.put = lambda *a, **k: None                       # nothing is rendered by this check, only recorded
+jobs.request_render(job["id"], "clip001", {"layout": "split", "split": {"cam": [0, 0, 0.3, 0.3], "cam_pct": 30}})
+check("re-making a clip can change its boxes", job["clips"][0]["split"], {"cam": [0.0, 0.0, 0.3, 0.3], "game": [0.0, 0.0, 1.0, 1.0], "cam_pct": 30})
+
 print("ALL PASSED" if not fails else f"{len(fails)} failed")
 sys.exit(1 if fails else 0)
