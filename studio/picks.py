@@ -1,10 +1,12 @@
 """Live Transcriber: the moments a clipper can pick from a live stream (points), the stretch of stream kept around
 each one so it can still be cut after the buffer has moved on (holds), and the clips cut from them (cuts)."""
+import json
 import math
+import shutil
 import time
 from pathlib import Path
 
-from . import jobs, media, safe
+from . import brain, creators, jobs, media, render, safe, usage
 
 HOLD_BEFORE, HOLD_AFTER = 60.0, 60.0    # seconds of stream kept either side of a moment
 LEAD_DEFAULT, LEAD_MAX = 20.0, 60.0     # "seconds before": how far before the moment a clip starts
@@ -204,3 +206,67 @@ def after_restart():
             c.update(status="error", error="PeakCut was closed while this clip was being made. Make it again.")
         if stuck:
             jobs.save(job)
+
+
+def _words_of(job):
+    """The live transcript: from the running session, else from the words saved next to the recording."""
+    from . import live
+    s = live.SESSIONS.get(job["id"])
+    if s:
+        with s.lock:
+            return list(s.words)
+    try:
+        return json.loads((Path(job["dir"]) / "words.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+
+
+def edit_cut(job, cut_id, options):
+    """Send a cut to the editor: it becomes a normal video of the same creator with one clip covering the whole cut,
+    which is then made (captions, layout, hook) like any other clip and can be re-made and posted from there."""
+    cut = cut_of(job, cut_id)
+    if cut["status"] != "ready":
+        raise ValueError("This clip is still being made. Try again in a moment.")
+    p = point_of(job, cut["point"])
+    cr = (creators.get(job["creator"]) if job.get("creator") else None) or {}
+    style = options.get("style") if options.get("style") in render.STYLES else cr.get("style", "bounce")
+    layout = options.get("layout") if options.get("layout") in render.LAYOUTS else cr.get("layout", "blur")
+    hook = str(options.get("hook") or "").strip()[:60]
+    boxes = render.clean_split(options.get("split"))
+    words = [dict(w, s=round(w["s"] - cut["start"], 2), e=round(w["e"] - cut["start"], 2))
+             for w in _words_of(job) if cut["start"] <= w["s"] <= cut["end"]]
+    m, s = divmod(int(p["t"]), 60)
+    new = jobs.create({"type": "cut", "path": "", "name": f"{job.get('title') or 'Live stream'} at {m}:{s:02d}"},
+                      {"style": style, "layout": layout}, enqueue=False, creator=job.get("creator"))
+    dest = Path(new["dir"]) / "source.mp4"
+    shutil.copyfile(Path(job["dir"]) / cut["file"], dest)
+    meta = media.probe(dest)
+    (Path(new["dir"]) / "words.json").write_text(json.dumps(words), encoding="utf-8")
+    clip = {"id": "clip001", "start": 0.0, "end": round(meta["duration"], 2), "score": p["score"],
+            "reason": p["reason"], "hook": hook, "title": "", "description": "", "hashtags": [], "highlight_words": [],
+            "category": "other", "style": style, "layout": layout, "status": "queued", "version": 0,
+            "made_at": time.time()}
+    if boxes:
+        clip["split"] = boxes
+    new["source"]["path"] = str(dest)
+    new.update(source_path=str(dest), status="done", stage="Made from a live moment", title=new["source"]["name"],
+               uploader=job.get("uploader", ""), duration=meta["duration"], width=meta["width"],
+               height=meta["height"], clips=[clip], from_live={"job": job["id"], "cut": cut_id}, remake=["clip001"])
+    jobs.save(new)
+    cut["edited"] = new["id"]
+    jobs.save(job)
+    title, up, text = job.get("title") or "", job.get("uploader") or "", " ".join(w["w"] for w in words)
+
+    def make():
+        usage.set_context(new.get("creator"), title or "Live stream")
+        d = brain.describe(text, title, up)
+        for k in ("title", "description", "hashtags", "highlight_words", "category"):
+            clip[k] = d.get(k, clip[k])
+        if not hook:
+            clip["hook"] = d.get("hook", "")
+        jobs.render_one(new, clip, words)
+        new.pop("remake", None)                 # made: nothing to pick up after a restart
+        jobs.save(new)
+
+    jobs.submit(make)
+    return new

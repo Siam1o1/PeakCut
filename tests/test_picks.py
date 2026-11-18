@@ -165,6 +165,34 @@ job["cuts"].append({"id": "cut050", "point": m["id"], "status": "making", "file"
 jobs.save(job)
 picks.after_restart()
 check("a cut interrupted by a restart says to make it again", job["cuts"][-1]["status"], "error")
+# ---- Edit: a cut goes to the editor
+from studio import brain, config, render
+config.FONTS_DIR.mkdir(parents=True, exist_ok=True); render.install_fonts()
+jobs.submit = lambda fn: fn()
+def fake_ai(prompt, schema=None, purpose=""):
+    if "clipped this moment by hand" in prompt:
+        return [{"start": 0, "end": 0, "score": 0, "hook": "NO WAY", "title": "He did it", "description": "d",
+                 "hashtags": ["gaming"], "reason": "r"}], "m", 5
+    raise RuntimeError("no AI for captions in tests")
+brain.ask_ai = fake_ai
+live.SESSIONS[job["id"]] = s                           # the live words come from the session, as while recording
+cm = picks.make_cut(job, m["id"], 10, 20)
+creators.update(cr["id"], {"split": {"cam": [0.7, 0.0, 0.3, 0.3], "cam_pct": 40}})
+new = picks.edit_cut(job, cm["id"], {"style": "hype", "layout": "split"})
+nc = new["clips"][0]
+check("the cut becomes a video under the same creator", (new["creator"], new["kind"], new["source"]["type"]), (cr["id"], "video", "cut"))
+check("...with one clip covering the whole cut", (nc["start"], round(nc["end"]), nc["style"], nc["layout"]), (0.0, 20, "hype", "split"))
+check("...rendered, with the AI's hook and the creator's facecam boxes", (nc["status"], nc["hook"], nc["split"]["cam"]), ("done", "NO WAY", [0.7, 0.0, 0.3, 0.3]))
+words = __import__("json").loads((Path(new["dir"]) / "words.json").read_text(encoding="utf-8"))
+check("...and the live words, moved to start at zero", (words[0]["s"], words[0]["w"]), (0.0, f"w{int(cm['start'])}"))
+check("the cut remembers it was edited", picks.cut_of(job, cm["id"])["edited"], new["id"])
+new2 = picks.edit_cut(job, cm["id"], {"hook": "my own words", "layout": "blur"})
+check("a hook typed by the clipper is used as it is", new2["clips"][0]["hook"], "my own words")
+try:
+    picks.edit_cut(job, cm["id"], {"layout": "nonsense"}); said = "accepted"
+except ValueError:
+    said = "refused"
+check("an unknown layout falls back instead of failing", said, "accepted")
 # (later tasks add more sections here, above this line)
 print("ALL PASSED" if not fails else f"{len(fails)} failed")
 sys.exit(1 if fails else 0)
