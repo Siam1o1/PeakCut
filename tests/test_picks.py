@@ -105,6 +105,38 @@ jp = job["points"][-1]
 check("with no AI, a loud moment is still listed", (jp["from"], jp["t"], jp["reason"]), ("jump", 140.0, "Jump: loudness +80%"))
 check("a normal (not pick) recording still makes clips", live.Session({**job, "mode": None, "id": "x"}, creators.get(cr["id"])).pick, False)
 
+
+# ---- fix round: how moments are labelled, "must clip" in pick mode, a recording that ends, marking too late
+good = {"start": 30, "end": 60, "peak": 40, "score": 88, "reason": "Funny", "hook": "h", "title": "t", "description": "d", "hashtags": []}
+brain.judge_transcript = lambda *a, **k: ([dict(good)], 5)
+brain.judge_signals = lambda *a, **k: ([{"start": 0, "end": 400, "score": 80, "reason": "loud"}], 5)
+s2 = live.Session(job, creators.get(cr["id"]))
+s2.words, s2.t_done, s2.settings["min_gap_min"] = s.words, 150.0, 0
+s2._ai_check((30.0, 60.0), "Jump: loudness +80%")
+check("an AI point found after a jump is labelled as a jump", job["points"][-1]["from"], "jump")
+good.update(start=90, end=120, peak=95)
+s2._ai_check()
+check("an AI point found on the schedule is labelled as the AI's", job["points"][-1]["from"], "ai")
+n = len(job["points"])
+s2.settings["must_clip_min"] = 1
+s2.started_at -= 3600                                  # recording for an hour; the last point was made just now
+good.update(start=0, end=20, peak=5, score=50)         # below the bar: only a forced check would take it
+s2._ai_check()
+check("a point made just now stops 'must clip' from forcing another", len(job["points"]), n)
+s2.settings["must_clip_min"] = 0
+live.resolve = lambda url: (_ for _ in ()).throw(RuntimeError("boom"))
+s3 = live.Session(job, creators.get(cr["id"]))
+try:
+    s3._ingest()
+except RuntimeError:
+    pass
+check("however recording stops, the session knows it has ended", s3.ended, True)
+s2.analysis_done = True
+try:
+    s2.mark(5.0); said = ""
+except ValueError as x:
+    said = str(x)
+check("marking a moment after the recording ended is refused in plain words", said, "This recording has already ended.")
 # (later tasks add more sections here, above this line)
 print("ALL PASSED" if not fails else f"{len(fails)} failed")
 sys.exit(1 if fails else 0)

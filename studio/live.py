@@ -92,6 +92,7 @@ def mine(jid):
 class Session:
     def __init__(self, job, settings):
         self.job, self.settings = job, settings
+        self.analysis_done = False    # the analysis loop has finished: nothing more can be listed
         self.pick = job.get("mode") == "pick"   # Live Transcriber: moments are listed for the clipper, not clipped
         self.dir = Path(job["dir"])
         self.buf = self.dir / "buffer"
@@ -159,6 +160,12 @@ class Session:
             self.proc.terminate()
 
     def _ingest(self):
+        try:
+            self._record()
+        finally:
+            self.ended = True         # however recording stops, the rest of the session must know
+
+    def _record(self):
         fails = 0
         url = self.job["source"]["url"]
         while not self.stop_flag.is_set():
@@ -208,7 +215,6 @@ class Session:
             if fails >= 3:
                 break
             self.stop_flag.wait(3)
-        self.ended = True
 
     def _scan_segments(self):
         """Pick up buffer pieces ffmpeg has finished writing."""
@@ -337,6 +343,7 @@ class Session:
         for the same stretch, without seeing the words. A clip is made when both say yes (or as set in Setup)."""
         st = self.settings
         prev = self.job["points"] if self.pick else self.job["clips"]
+        trigger = why                 # what started this check; `why` is reused below for the judges' verdict
         every = int(st.get("ai_every_min", 3)) or 3
         if window:                    # just the stretch around a jump, or around someone saying "clip"
             ws, now = max(0.0, window[0]), window[1]
@@ -345,8 +352,8 @@ class Session:
             ws = max(0.0, now - max(every, 3) * 60 - 90)  # each check overlaps the last by 90 s, so nothing falls between
         self.last_check = self.t_done
         win = [w for w in self.words if ws <= w["s"] <= now]
-        recent = [c for c in self.job["clips"] if c.get("score", 0) > 0 and time.time() - c.get("made_at", 0) < 3600]
-        last_clip = max((c.get("made_at", 0) for c in self.job["clips"]), default=self.started_at)
+        recent = [c for c in prev if c.get("score", 0) > 0 and time.time() - c.get("made_at", 0) < 3600]
+        last_clip = max((c.get("made_at", 0) for c in prev), default=self.started_at)
         must = st["must_clip_min"] > 0 and time.time() - last_clip >= st["must_clip_min"] * 60
         verdict = {"t": round(now), "transcript": None, "reaction": None, "trigger": why}
         if len(win) < 8:
@@ -402,7 +409,7 @@ class Session:
                                                      st["decide_mode"] == "either" else "Forced: no clip for a while")
             c["judges"] = {"words": c["score"], "reaction": rs or None, "why": why}
             c["reason"] = f"{c['reason']} ({why.lower()}.)"
-            c["from"] = "jump" if (why or "").startswith("Jump") else "said" if why else "ai"
+            c["from"] = "jump" if (trigger or "").startswith("Jump") else "said" if trigger else "ai"
             self._add_clip(c)
             self._verdict(verdict, "Clipped: " + why.lower())
             added += 1
@@ -538,6 +545,8 @@ class Session:
 
     def mark(self, t):
         """The clipper marked this moment in the transcript (Live Transcriber)."""
+        if not self.pick or self.analysis_done:
+            raise ValueError("This recording has already ended.")
         return picks.add_point(self, {"start": t, "end": t, "peak": t, "score": 0, "reason": "Marked by you", "from": "you"})
 
     def _publish(self):
@@ -598,6 +607,7 @@ class Session:
                 break
             if not busy:
                 time.sleep(2)
+        self.analysis_done = True
         failed = bool(self.job.get("error")) and not started
         self.job.update(status="error" if failed else "done", stage="Could not record" if failed else self.end_note)
         jobs.save(self.job)

@@ -81,10 +81,13 @@ def flush_holds(s):
     every pass of the session loop, so the render worker never sits waiting for the stream."""
     with s.lock:
         reach = (s.segments[-1][2] + s.clock_fix) if s.segments else 0.0
-    for p in waiting(s):
-        if s.ended or reach >= p["t"] + HOLD_AFTER + 1:
-            p["hold"]["status"] = "saving"
-            jobs.submit_live(lambda p=p: save_hold(s, p))
+    due = [p for p in waiting(s) if s.ended or reach >= p["t"] + HOLD_AFTER + 1]
+    for p in due:
+        p["hold"]["status"] = "saving"
+    if due:
+        jobs.save(s.job)
+    for p in due:
+        jobs.submit_live(lambda p=p: save_hold(s, p))
 
 
 def save_hold(s, p):
@@ -99,10 +102,10 @@ def save_hold(s, p):
         jobs.save(s.job)
         return
     out = s.dir / "points"
-    out.mkdir(exist_ok=True)
     lst, ts, mp4 = out / f"{p['id']}.txt", out / f"{p['id']}.ts", out / f"{p['id']}.mp4"
-    lst.write_text("".join(f"file '{g[0].as_posix()}'\n" for g in segs), encoding="utf-8")
     try:
+        out.mkdir(exist_ok=True)
+        lst.write_text("".join(f"file '{g[0].as_posix()}'\n" for g in segs), encoding="utf-8")
         media.run(["ffmpeg", "-y", "-v", "error", "-f", "concat", "-safe", "0", "-i", str(lst), "-c", "copy", str(ts)])
         dur = segs[-1][2] - segs[0][1]
         offset = s._align(ts, segs[0][1] + fix, dur)
