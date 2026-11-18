@@ -1,4 +1,5 @@
 """Turns a time range into a vertical clip: 9:16 layout, bouncy word captions, hook title, cover."""
+import math
 import re
 import shutil
 import subprocess
@@ -78,7 +79,38 @@ def install_fonts():
             shutil.copyfile(f, config.FONTS_DIR / f.name)
 
 
-LAYOUTS = {"blur": "Full frame + blurred fill", "zoom": "Zoomed in + blurred fill", "crop": "Fill the screen (centre crop)"}
+LAYOUTS = {"blur": "Full frame + blurred fill", "zoom": "Zoomed in + blurred fill", "crop": "Fill the screen (centre crop)",
+           "split": "Gameplay on top, facecam below"}
+SPLIT_GAME = [0.0, 0.0, 1.0, 1.0]   # with no gameplay box drawn, the whole frame goes on top
+
+
+def clean_split(v):
+    """The boxes for the split layout, or None when there is no usable facecam box. A box is [x, y, w, h] as parts of
+    the frame (0 to 1); anything running off the frame is pulled back inside."""
+    if not isinstance(v, dict):
+        return None
+
+    def box(b):
+        if not isinstance(b, (list, tuple)) or len(b) != 4:
+            return None
+        try:
+            x, y, w, h = (float(n) for n in b)
+        except (TypeError, ValueError):
+            return None
+        if not all(math.isfinite(n) for n in (x, y, w, h)):
+            return None
+        x, y = min(max(x, 0.0), 0.95), min(max(y, 0.0), 0.95)
+        w, h = min(max(w, 0.05), 1.0 - x), min(max(h, 0.05), 1.0 - y)
+        return [round(x, 4), round(y, 4), round(w, 4), round(h, 4)]
+
+    cam = box(v.get("cam"))
+    if not cam:
+        return None
+    try:
+        pct = int(float(v.get("cam_pct", 40)))
+    except (TypeError, ValueError):
+        pct = 40
+    return {"cam": cam, "game": box(v.get("game")) or list(SPLIT_GAME), "cam_pct": max(25, min(50, pct))}
 
 
 def _ts(t):
@@ -108,10 +140,15 @@ def _groups(words, per):
     return out
 
 
-def geometry(src_w, src_h, layout):
+def geometry(src_w, src_h, layout, split=None):
     """Where the video sits in the 1080x1920 frame, and where hook and captions go."""
     if src_h >= src_w and layout != "crop":
         layout = "crop"  # already vertical or square: nothing to gain from a blurred fill
+    if layout == "split" and not split:
+        layout = "blur"  # no facecam box drawn yet: the usual layout
+    if layout == "split":
+        game_h = H - int(round(H * split["cam_pct"] / 100 / 2)) * 2
+        return layout, game_h, 230, game_h          # captions across the line between gameplay and facecam
     if layout == "blur":
         fg_h = min(H, int(round(W * src_h / src_w / 2)) * 2)
     elif layout == "zoom":
@@ -227,7 +264,17 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     return head + "\n".join(ev) + "\n"
 
 
-def _filter(layout, fg_h):
+def _filter(layout, fg_h, split=None):
+    if layout == "split":
+        gx, gy, gw, gh = split["game"]
+        cx, cy, cw, ch = split["cam"]
+        cam_h = H - fg_h
+        return (f"[0:v]fps={config.OUT_FPS},split=2[g][c];"
+                f"[g]crop=iw*{gw}:ih*{gh}:iw*{gx}:ih*{gy},"
+                f"scale={W}:{fg_h}:force_original_aspect_ratio=increase,crop={W}:{fg_h}[top];"
+                f"[c]crop=iw*{cw}:ih*{ch}:iw*{cx}:ih*{cy},"
+                f"scale={W}:{cam_h}:force_original_aspect_ratio=increase,crop={W}:{cam_h}[bot];"
+                f"[top][bot]vstack=inputs=2,setsar=1[v0];")
     if layout == "crop":
         return f"[0:v]fps={config.OUT_FPS},scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H},setsar=1[v0];"
     return (f"[0:v]fps={config.OUT_FPS},split=2[a][b];"
@@ -245,7 +292,8 @@ def render_clip(src: Path, out_dir: Path, name: str, clip: dict, words: list, sr
     """Writes <name>.mp4, <name>.jpg and <name>.ass into out_dir. Returns file names."""
     out_dir.mkdir(parents=True, exist_ok=True)
     start, end = clip["start"], clip["end"]
-    layout, fg_h, hook_y, cap_y = geometry(src_w, src_h, clip.get("layout", "blur"))
+    split = clean_split(clip.get("split"))
+    layout, fg_h, hook_y, cap_y = geometry(src_w, src_h, clip.get("layout", "blur"), split)
     ass = build_ass(words, start, end, clip.get("hook", ""), clip.get("style", "bounce"),
                     clip.get("highlight_words", []), hook_y, cap_y)
     # The clip is made in a short work folder and moved into place afterwards. The caption step of ffmpeg cannot
@@ -254,18 +302,18 @@ def render_clip(src: Path, out_dir: Path, name: str, clip: dict, words: list, sr
     # break the filter syntax).
     work = Path(tempfile.mkdtemp(prefix="pk"))
     try:
-        return _render_in(work, src, out_dir, name, start, end, layout, fg_h, ass)
+        return _render_in(work, src, out_dir, name, start, end, layout, fg_h, ass, split)
     finally:
         shutil.rmtree(work, ignore_errors=True)
 
 
-def _render_in(work: Path, src: Path, out_dir: Path, name: str, start, end, layout, fg_h, ass: str) -> dict:
+def _render_in(work: Path, src: Path, out_dir: Path, name: str, start, end, layout, fg_h, ass: str, split=None) -> dict:
     global _qsv_ok
     (work / f"{name}.ass").write_text(ass, encoding="utf-8")
     (work / "f").mkdir()
     for f in config.FONTS_DIR.glob("*.ttf"):
         shutil.copyfile(f, work / "f" / f.name)
-    fc = _filter(layout, fg_h) + f"[v0]ass={name}.ass:fontsdir=f[v]"
+    fc = _filter(layout, fg_h, split) + f"[v0]ass={name}.ass:fontsdir=f[v]"
     base = ["ffmpeg", "-y", "-v", "error", "-ss", f"{start:.2f}", "-t", f"{end - start:.2f}", "-i", str(src),
             "-filter_complex", fc, "-map", "[v]", "-map", "0:a:0", "-af", "loudnorm=I=-14:TP=-1.5:LRA=11",
             "-c:a", "aac", "-b:a", "160k", "-ar", "48000", "-movflags", "+faststart", "-pix_fmt"]
