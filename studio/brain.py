@@ -26,6 +26,7 @@ SCHEMA = {
             "hashtags": {"type": "ARRAY", "items": {"type": "STRING"}},
             "highlight_words": {"type": "ARRAY", "items": {"type": "STRING"}},
             "reason": {"type": "STRING"},
+            "peak": {"type": "NUMBER"},
         },
         "required": ["start", "end", "score", "hook", "title", "description", "hashtags", "reason"],
     },
@@ -57,6 +58,8 @@ Rules:
 - Do not pick intros, sponsor reads, "like and subscribe", or dead air.
 - Skip weak moments. Fewer strong clips beat many weak ones. Return [] if nothing is worth clipping.
 - score: 0-100, how likely a stranger keeps watching. Be honest; most clips are 50-80.
+- peak: the [seconds] value of the single instant people would share (the punchline, the reaction, the play).
+  It lies between start and end.
 - hook: at most 5 words, ALL CAPS, shown as big text on the video. Curiosity, but true to what happens.
 - title: at most 70 characters, for the post.
 - description: one or two sentences.
@@ -105,6 +108,12 @@ def _num(v, default=0.0):
 def _fmt(lines):
     return "\n".join(f"[{l['s']:.1f}] {'(LOUD) ' if l['loud'] else ''}{'(CHAT) ' if l.get('chat') else ''}{_safe(l['text'], 2000)}"
                      for l in lines)
+
+
+def _peak(c, s, e):
+    """The moment itself, if the AI named one inside the clip; None otherwise."""
+    p = _num(c.get("peak"), -1.0)
+    return round(p, 2) if s <= p <= e else None
 
 
 def _tidy(c, s, e):
@@ -374,7 +383,9 @@ def judge_transcript(words, start, now, title="", uploader="", min_len=15, max_l
         s, e = _snap(c, lines, words, min_len, max_len, now)
         if e - s < min_len - 1 or _overlaps(s, e, list(existing) + clips):
             continue
-        clips.append(_tidy(c, s, e))
+        t = _tidy(c, s, e)
+        t["peak"] = _peak(c, s, e)
+        clips.append(t)
     return clips, spent
 
 
