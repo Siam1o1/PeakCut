@@ -2236,7 +2236,7 @@ function drawTranscriber() {
   const live = ltJobs().find(j => j.status === "live"), done = ltJobs().filter(j => j.status !== "live");
   if (!S.ltCreator) S.ltCreator = live?.creator || S.creators[0]?.id || "";
   if (live) S.ltCreator = live.creator;
-  const typing = !live && ($("#lt_url")?.value || st.contains(document.activeElement));
+  const f = $("#ltform"), typing = !live && f && ($("#lt_url")?.value || f.contains(document.activeElement));
   if (!typing) put(st, live ? `<div class="lt-start"><span class="pill live"><span class="dot"></span>Live</span><b>${esc(live.title || live.source.name)}</b>
         <span class="sub">${esc(live.stage)} · ${fmt(live.live?.elapsed || 0)} recorded</span><span class="grow"></span>
         <button class="btn danger" data-act="stoplive" data-j="${live.id}">${ic("stop")}Stop</button></div>`
@@ -2273,6 +2273,9 @@ async function ltPoll1() {
   S.ltAfter = r.lines[r.lines.length - 1].e;
   if (follow) box.scrollTop = box.scrollHeight;
 }
+// a video that kept playing held back the redraws: catch up as soon as it pauses or ends
+for (const ev of ["pause", "ended"]) document.addEventListener(ev, e => {
+  if (S.view === "transcriber" && e.target.closest?.("#ltlive, #ltdone")) drawTranscriber(); }, true);
 setInterval(() => { if (S.view === "transcriber" && !document.hidden) ltPoll().catch(() => {}); }, 4000);
 async function ltStart() {
   let cid = $("#lt_creator").value; const url = $("#lt_url").value.trim();
@@ -2356,16 +2359,19 @@ function openCutEdit(jid, cutId) {
     <div class="ob"><div class="ot">Layout</div>${choice("ce_layout", Object.entries(S.status.layouts).map(([k, v]) => ({v:k, label:LAYOUT_SHORT[k] || v, title:v, prev:`<span class="lay-prev ${esc(k)}"><span class="ph"><i></i></span></span>`})), cr.layout || "blur")}</div>
     <p class="sub" id="ce_box">${split ? "Facecam box saved for this creator." : "For Game + cam, draw the facecam box once."} <button type="button" class="btn sm" id="ce_draw">${split ? "Change the boxes" : "Draw the facecam box"}</button></p>
     <div class="dlg-foot"><button type="button" class="btn" id="ce_no">Cancel</button><button type="button" class="btn primary" id="ce_go">${ic("scissors")}Make vertical clip</button></div></form>`;
+  let sending = false;
   const go_ = async () => {
+    if (sending) return;
     const body = {hook: $("#ce_hook").value.trim(), style: $("#ce_style").value, layout: $("#ce_layout").value};
     if (body.layout === "split") { if (!split) return openBoxes(frame, j.creator, null, s => { split = s; go_(); }); body.split = split; }
+    sending = true;
     try {
       const nj = await send(`/api/live/${jid}/cuts/${cutId}/edit`, body);
       d.close(); if (!jobOf(nj.id)) S.jobs.unshift(nj);
       toast("Making your vertical clip…", "ok");
       if (j.creator) go("c:" + j.creator); else go("library");
       tick();
-    } catch (x) { toast(x.message, "bad"); }
+    } catch (x) { toast(x.message, "bad"); } finally { sending = false; }
   };
   $("#ce_draw").onclick = () => openBoxes(frame, j.creator, split, s => { split = s; $("#ce_box").firstChild.textContent = "Facecam box saved for this creator. "; $("#ce_draw").textContent = "Change the boxes"; });
   $("#ce_go").onclick = go_; $("#ce_no").onclick = () => d.close();
