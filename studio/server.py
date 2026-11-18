@@ -1264,8 +1264,9 @@ def _picks_call(fn, *a):
         return fn(*a)
     except LookupError as e:
         raise HTTPException(404, str(e))
-    except (ValueError, TypeError) as e:
-        raise HTTPException(400, str(e) or "Those numbers aren't valid.")
+    except ValueError as e:
+        msg = str(e) or "Those numbers aren't valid."
+        raise HTTPException(409 if "still being" in msg else 400, msg)
 
 
 @app.post("/api/transcriber/start")
@@ -1300,7 +1301,7 @@ def mark_point(jid: str, body: dict = Body(...)):
     _pick_job(jid)
     s = live.mine(jid)
     if not s or s.ended:
-        raise HTTPException(404, "This recording has already ended")
+        raise HTTPException(404, "This recording has already ended.")
     _throttle("mark:" + ctx.uid(), 30, 60, "That's a lot of marks at once. Wait a moment.")
     try:
         t = float(body.get("t"))
@@ -1349,6 +1350,7 @@ def edit_cut(jid: str, cut: str, body: dict = Body(default={})):
 @app.get("/api/live/{jid}/cuts/{cut}/frame")
 def cut_frame(jid: str, cut: str):
     job = _pick_job(jid)
+    _throttle("frame:" + ctx.uid(), 60, 60, "That's a lot of pictures at once. Wait a moment.")
     c = _picks_call(picks.cut_of, job, cut)
     if c["status"] != "ready":
         raise HTTPException(409, "This clip is still being made.")
@@ -1362,6 +1364,7 @@ def cut_frame(jid: str, cut: str):
 @app.get("/api/jobs/{jid}/clips/{cid}/frame")
 def clip_frame(jid: str, cid: str):
     job = _job_or_404(jid)
+    _throttle("frame:" + ctx.uid(), 60, 60, "That's a lot of pictures at once. Wait a moment.")
     clip = next((c for c in job["clips"] if c["id"] == cid), None)
     if not clip:
         raise HTTPException(404, "No such clip")

@@ -1,4 +1,3 @@
-
 """The Live Transcriber's routes, with accounts off (the default): what they answer, and that nobody reaches anyone
 else's recording. Runs against the code directly with its own data folder; no stream, no AI, no internet."""
 import os, sys, tempfile
@@ -8,7 +7,7 @@ os.environ.update(DATABASE_URL="", PEAKCUT_ACCOUNTS="0", PEAKCUT_AI_KEY="", PEAK
                   PEAKCUT_PUBLIC_URL="http://127.0.0.1:8765")
 sys.path.insert(0, ".")
 from fastapi.testclient import TestClient  # noqa: E402
-from studio import auth, creators, ctx, db, jobs, live, picks, server  # noqa: E402
+from studio import auth, brain, creators, ctx, db, jobs, live, picks, server  # noqa: E402
 from tests.fakestream import make_video  # noqa: E402
 db.init()
 fails = []
@@ -19,6 +18,9 @@ def check(n, got, want=True):
     ok = want(got) if callable(want) else got == want
     print(("PASS " if ok else "FAIL ") + n + ("" if ok else f"   got {got!r}")); ok or fails.append(n)
 jobs.submit_live = lambda fn: fn()
+jobs.submit = lambda fn: fn()
+def _no_ai(*a, **k): raise RuntimeError("no AI in this test")
+brain.ask_ai = _no_ai
 
 cr = c.post("/api/creators", json={"name": "Route Tester"}, headers=H).json()
 r = c.post("/api/transcriber/start", json={"creator": cr["id"]}, headers=H)
@@ -71,6 +73,18 @@ check("someone else's recording cannot be read, marked, cut or played",
        c.get(f"/media/{O}/cuts/cut001.mp4").status_code), (404, 404, 404, 404))
 check("another website cannot make cuts", c.post(f"/api/live/{J}/points/pt001/cuts", json={"lead": 1, "length": 9},
       headers={"Origin": "https://evil.example", "Sec-Fetch-Site": "cross-site"}).status_code, 403)
+seen = []
+real_throttle = server._throttle
+server._throttle = lambda key, *a, **k: seen.append(key)
+c.get(f"/api/live/{J}/cuts/{cid}/frame")
+server._throttle = real_throttle
+check("picture requests are limited per person", (len(seen), seen[0].startswith("frame:")), (1, True))
+e = c.post(f"/api/live/{J}/cuts/{cid}/edit", json={"layout": "blur"}, headers=H)
+ej = e.json()
+check("sending a cut to the editor", (e.status_code, ej["clips"][0]["layout"], ej["source"]["type"]), (200, "blur", "cut"))
+check("another person's moments and cuts cannot be touched or pictured",
+      (c.get(f"/api/live/{O}/cuts/cut001/frame").status_code, c.delete(f"/api/live/{O}/points/pt001", headers=H).status_code,
+       c.delete(f"/api/live/{O}/cuts/cut001", headers=H).status_code), (404, 404, 404))
 check("deleting a cut", (c.delete(f"/api/live/{J}/cuts/{cid}", headers=H).status_code, any(x["id"] == cid for x in job["cuts"])), (200, False))
 check("deleting a moment", c.delete(f"/api/live/{J}/points/pt001", headers=H).status_code, 200)
 check("pick-mode recordings carry their moments to the page", "points" in c.get(f"/api/jobs/{J}").json(), True)
