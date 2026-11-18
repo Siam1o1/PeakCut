@@ -858,6 +858,7 @@ dialog[open]{animation:fadein .16s ease}
 </div>
 <dialog id="clipdlg"></dialog>
 <dialog id="formdlg"></dialog>
+<dialog id="boxdlg"></dialog>
 <input type="file" id="file" accept="video/*" multiple hidden>
 <div id="toasts" role="status" aria-live="polite"></div>
 <div class="pop" id="bellpop" role="dialog" aria-label="Notifications" hidden></div>
@@ -1416,7 +1417,7 @@ function drawAdd(variant) {
     </div></div></form>`;
   drawAtt();
 }
-const LAYOUT_SHORT = {blur:"Blurred fill", zoom:"Zoomed in", crop:"Fill screen"};
+const LAYOUT_SHORT = {blur:"Blurred fill", zoom:"Zoomed in", crop:"Fill screen", split:"Game + cam"};
 const CAP_LOOK = {bounce:{font:"'Archivo Black'", hl:"#FFFF00", up:true}, hype:{font:"Anton", hl:"#FF3C3C", up:true}, clean:{font:"Poppins", hl:"#6BD7FF", up:false, w:800}};
 function capPrev(k) {
   const s = CAP_LOOK[k] || {font:"inherit", hl:"#FF8B33", up:true};
@@ -2152,7 +2153,7 @@ async function drawSettings() {
 async function saveSettings() { const d = {}; $$("#sform [data-s]").forEach(i => d[i.dataset.s] = i.value); await send("/api/settings", d, "PUT"); }
 
 /* ============================================================ clip editor */
-function openClip(jid, cid) { D.jid = jid; D.cid = cid; D.sig = ""; drawClipDlg(true); $("#clipdlg").showModal(); }
+function openClip(jid, cid) { D.jid = jid; D.cid = cid; D.sig = ""; D.split = null; drawClipDlg(true); $("#clipdlg").showModal(); }
 function drawClipDlg(full) {
   const j = jobOf(D.jid), c = j?.clips.find(x => x.id === D.cid), dlg = $("#clipdlg");
   if (!c) { if (dlg.open) dlg.close(); return; }
@@ -2169,6 +2170,7 @@ function drawClipDlg(full) {
         <label class="f">Big text<input data-f="hook" value="${esc(c.hook)}"></label>
         <div class="two"><label class="f">Caption style<select data-f="style">${opts(S.status.styles, c.style)}</select></label>
           <label class="f">Layout<select data-f="layout">${opts(S.status.layouts, c.layout)}</select></label></div>
+        <p class="sub">For Game + cam: <button type="button" class="btn sm" data-act="clipboxes">${c.split || S.creators.find(x => x.id === j.creator)?.split ? "Change the facecam box" : "Draw the facecam box"}</button></p>
         <div class="two"><label class="f">Start (seconds)<input data-f="start" type="number" step="0.5" value="${c.start}"></label>
           <label class="f">End (seconds)<input data-f="end" type="number" step="0.5" value="${c.end}"></label></div>
         <h3>Post text</h3>
@@ -2276,7 +2278,92 @@ async function ltStart() {
   S.ltCreator = cid; if (!jobOf(j.id)) S.jobs.unshift(j);
   toast("Recording started. The transcript appears in a few seconds.", "ok"); render(); tick();
 }
-function openCutEdit(jid, cutId) { toast("Editing arrives in the next step.", "bad"); }   // replaced in Task 10
+/* ---- the facecam box editor: drag on a frame to draw the facecam and the gameplay boxes */
+function openBoxes(src, cid, cur, done) {
+  const B = {game: [...(cur?.game || [0, 0, 1, 1])], cam: cur?.cam ? [...cur.cam] : null, cam_pct: cur?.cam_pct || 40, mode: "cam"};
+  const d = $("#boxdlg");
+  d.innerHTML = `<div class="dlg boxes"><h2>Show where the facecam is</h2>
+    <p class="help">Drag on the picture to draw the <b>facecam</b> box. Then choose Gameplay and draw what goes on top (the whole picture if you skip it). Drag a box to move it, or its corner dot to resize it.</p>
+    <div class="seg" role="group" aria-label="Which box"><button type="button" data-bx="cam" aria-pressed="true">Facecam box</button><button type="button" data-bx="game" aria-pressed="false">Gameplay box</button></div>
+    <div class="bx-row"><div class="bx-stage" id="bxStage" style="flex:1;min-width:260px"><img id="bxImg" src="${esc(src)}" alt="A picture from the clip" draggable="false">
+        <div class="bx game" id="bx_game"><span>Gameplay</span><i></i></div><div class="bx cam" id="bx_cam"><span>Facecam</span><i></i></div></div>
+      <div><canvas id="bxCv" width="270" height="480" aria-label="How the clip will look"></canvas>
+        <label class="f">Facecam height <b id="bxPctV">${B.cam_pct}%</b><input type="range" id="bxPct" min="25" max="50" value="${B.cam_pct}"></label></div></div>
+    <div class="dlg-foot"><button type="button" class="btn" id="bxNo">Cancel</button><button type="button" class="btn primary" id="bxOk">Save boxes</button></div></div>`;
+  const img = $("#bxImg"), stage = $("#bxStage");
+  const clamp = b => { b[2] = Math.min(Math.max(b[2], 0.05), 1); b[3] = Math.min(Math.max(b[3], 0.05), 1);
+    b[0] = Math.min(Math.max(b[0], 0), 1 - b[2]); b[1] = Math.min(Math.max(b[1], 0), 1 - b[3]); return b; };
+  function show() {
+    for (const k of ["game", "cam"]) { const el = $("#bx_" + k), b = B[k];
+      el.hidden = !b; if (b) Object.assign(el.style, {left: b[0] * 100 + "%", top: b[1] * 100 + "%", width: b[2] * 100 + "%", height: b[3] * 100 + "%"}); }
+    const cv = $("#bxCv"), g = cv.getContext("2d"), W = cv.width, Hh = cv.height, camH = Math.round(Hh * B.cam_pct / 100);
+    g.fillStyle = "#17110E"; g.fillRect(0, 0, W, Hh);
+    if (!img.naturalWidth) return;
+    const draw = (b, dy, dh) => { const sw = b[2] * img.naturalWidth, sh = b[3] * img.naturalHeight, s = Math.max(W / sw, dh / sh);
+      const cw = W / s, ch = dh / s; g.drawImage(img, b[0] * img.naturalWidth + (sw - cw) / 2, b[1] * img.naturalHeight + (sh - ch) / 2, cw, ch, 0, dy, W, dh); };
+    draw(B.game, 0, Hh - camH);
+    if (B.cam) draw(B.cam, Hh - camH, camH);
+  }
+  img.onload = show; img.onerror = () => toast("Couldn't load a picture from this clip.", "bad");
+  let drag = null;
+  const at = e => { const r = img.getBoundingClientRect(); return [(e.clientX - r.left) / r.width, (e.clientY - r.top) / r.height]; };
+  stage.onpointerdown = e => {
+    const [x, y] = at(e), b = B[B.mode];
+    if (e.target.tagName === "I" && e.target.parentElement.id === "bx_" + B.mode) drag = {kind: "size"};
+    else if (b && x >= b[0] && x <= b[0] + b[2] && y >= b[1] && y <= b[1] + b[3]) drag = {kind: "move", dx: x - b[0], dy: y - b[1]};
+    else { B[B.mode] = [x, y, 0.05, 0.05]; drag = {kind: "draw", x, y}; }
+    stage.setPointerCapture(e.pointerId); show();
+  };
+  stage.onpointermove = e => {
+    if (!drag) return; const [x, y] = at(e), b = B[B.mode];
+    if (drag.kind === "move") { b[0] = x - drag.dx; b[1] = y - drag.dy; }
+    else if (drag.kind === "size") { b[2] = x - b[0]; b[3] = y - b[1]; }
+    else { b[0] = Math.min(x, drag.x); b[1] = Math.min(y, drag.y); b[2] = Math.abs(x - drag.x); b[3] = Math.abs(y - drag.y); }
+    clamp(b); show();
+  };
+  stage.onpointerup = () => { drag = null; };
+  d.querySelectorAll("[data-bx]").forEach(btn => btn.onclick = () => { B.mode = btn.dataset.bx;
+    d.querySelectorAll("[data-bx]").forEach(o => o.setAttribute("aria-pressed", String(o === btn))); });
+  $("#bxPct").oninput = e => { B.cam_pct = Number(e.target.value); $("#bxPctV").textContent = B.cam_pct + "%"; show(); };
+  $("#bxNo").onclick = () => d.close();
+  $("#bxOk").onclick = async () => {
+    if (!B.cam) return toast("Draw the facecam box first.", "bad");
+    const split = {game: B.game.map(n => +n.toFixed(4)), cam: B.cam.map(n => +n.toFixed(4)), cam_pct: B.cam_pct};
+    try {
+      if (cid) { const c = await send(`/api/creators/${encodeURIComponent(cid)}`, {split}, "PUT"); const o = S.creators.find(x => x.id === cid); if (o) o.split = c.split; }
+      d.close(); done(split);
+    } catch (x) { toast(x.message, "bad"); }
+  };
+  d.showModal();
+}
+function openCutEdit(jid, cutId) {
+  const j = jobOf(jid), cut = j?.cuts?.find(c => c.id === cutId); if (!cut) return;
+  const cr = S.creators.find(c => c.id === j.creator) || {};
+  const frame = `/api/live/${jid}/cuts/${cutId}/frame`;
+  let split = cr.split || null;
+  const d = $("#formdlg");
+  d.innerHTML = `<form method="dialog" class="dlg" style="width:min(640px,calc(100vw - 32px))"><h2>Make a vertical clip</h2>
+    <p class="help">PeakCut adds captions in the style you choose and puts the clip in ${esc(cr.name || "this creator")}'s clips, where you can change it again and post it.</p>
+    <label class="f">Big text<input id="ce_hook" maxlength="60" placeholder="Leave empty and the AI writes one"></label>
+    <div class="ob"><div class="ot">Caption style</div>${choice("ce_style", Object.entries(S.status.styles).map(([k, v]) => ({v:k, label:v, prev:capPrev(k)})), cr.style || "bounce")}</div>
+    <div class="ob"><div class="ot">Layout</div>${choice("ce_layout", Object.entries(S.status.layouts).map(([k, v]) => ({v:k, label:LAYOUT_SHORT[k] || v, title:v, prev:`<span class="lay-prev ${esc(k)}"><span class="ph"><i></i></span></span>`})), cr.layout || "blur")}</div>
+    <p class="sub" id="ce_box">${split ? "Facecam box saved for this creator." : "For Game + cam, draw the facecam box once."} <button type="button" class="btn sm" id="ce_draw">${split ? "Change the boxes" : "Draw the facecam box"}</button></p>
+    <div class="dlg-foot"><button class="btn" value="no">Cancel</button><button type="button" class="btn primary" id="ce_go">${ic("scissors")}Make vertical clip</button></div></form>`;
+  const go_ = async () => {
+    const body = {hook: $("#ce_hook").value.trim(), style: $("#ce_style").value, layout: $("#ce_layout").value};
+    if (body.layout === "split") { if (!split) return openBoxes(frame, j.creator, null, s => { split = s; go_(); }); body.split = split; }
+    try {
+      const nj = await send(`/api/live/${jid}/cuts/${cutId}/edit`, body);
+      d.close(); if (!jobOf(nj.id)) S.jobs.unshift(nj);
+      toast("Making your vertical clip…", "ok");
+      if (j.creator) go("c:" + j.creator); else go("library");
+      tick();
+    } catch (x) { toast(x.message, "bad"); }
+  };
+  $("#ce_draw").onclick = () => openBoxes(frame, j.creator, split, s => { split = s; $("#ce_box").firstChild.textContent = "Facecam box saved for this creator. "; });
+  $("#ce_go").onclick = go_;
+  d.showModal();
+}
 
 /* ============================================================ render + polling */
 function render() {
@@ -2571,8 +2658,19 @@ document.addEventListener("click", async e => {
       if (!await ask("Disconnect this account?", "Posts still waiting for it will fail.", "Disconnect", true)) return;
       await api(`/api/accounts/${d.id}`, {method:"DELETE"}); await tick(); return drawSettings();
     }
+    if (a === "clipboxes") {
+      const j = jobOf(D.jid), c = j?.clips.find(x => x.id === D.cid); if (!c) return;
+      const cur = c.split || S.creators.find(x => x.id === j.creator)?.split || null;
+      return openBoxes(`/api/jobs/${D.jid}/clips/${D.cid}/frame`, j.creator, cur, s => { D.split = s; toast("Boxes saved. Choose Game + cam and press Save and re-make clip.", "ok"); });
+    }
     if (a === "remake") {
       const body = {}; $$("#clipdlg [data-f]").forEach(i => body[i.dataset.f] = i.type === "number" ? Number(i.value) : i.value);
+      if (body.layout === "split") {
+        const j = jobOf(D.jid), c = j?.clips.find(x => x.id === D.cid);
+        const boxes = D.split || c?.split || S.creators.find(x => x.id === j?.creator)?.split;
+        if (!boxes) return toast("Draw the facecam box first: press Draw the facecam box.", "bad");
+        body.split = boxes;
+      }
       await send(`/api/jobs/${D.jid}/clips/${D.cid}/render`, body); toast("Re-making the clip…", "ok"); return tick();
     }
     if (a === "postnow" || a === "postqueue") {
