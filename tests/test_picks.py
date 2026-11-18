@@ -32,6 +32,28 @@ got = brain.judge_transcript(ws(140), 0, 70, min_len=15, max_len=60)[0]
 check("a peak that is not a number is dropped", got[0]["peak"] if got else "no clip", None)
 check("the rules ask the AI for the peak", "peak:" in brain.RULES and "peak" in brain.SCHEMA["items"]["properties"])
 
+# ---- the maths
+from studio import picks
+check("with a peak, the point is the peak", picks.point_time({"start": 10, "end": 50, "peak": 31.5}), 31.5)
+check("without one, 20 s after the start", picks.point_time({"start": 10, "end": 50, "peak": None}), 30.0)
+check("...but never past the end", picks.point_time({"start": 10, "end": 18}), 18.0)
+check("a plain cut", picks.plan_cut(100, 40, 160, 20, 45), (80.0, 125.0, ""))
+check("lead-in above 60 is held at 60", picks.plan_cut(100, 40, 160, 90, 45), (40.0, 85.0, ""))
+check("length below 5 is raised to 5", picks.plan_cut(100, 40, 160, 20, 1)[:2], (80.0, 85.0))
+s, e, note = picks.plan_cut(100, 70, 160, 40, 45)
+check("not enough kept before: starts where the kept part starts, and says so",
+      (s, e, "30 seconds were kept before" in note), (70.0, 115.0, True))
+s, e, note = picks.plan_cut(100, 40, 138, 20, 60)
+check("not enough kept after: shortened, and says how long it is",
+      (s, e, note), (80.0, 138.0, "Only 38 seconds were kept after this moment, so the clip is 58 seconds long."))
+s, e, note = picks.plan_cut(100, 99, 101, 0, 30)
+check("a very short kept part still gives the whole of it", (s, e), (99.0, 101.0))
+try:
+    picks.plan_cut(100, 40, 160, float("nan"), 45); said = ""
+except ValueError as x:
+    said = str(x)
+check("nonsense numbers are refused in plain words", said, "Those numbers aren't valid.")
+
 # (later tasks add more sections here, above this line)
 print("ALL PASSED" if not fails else f"{len(fails)} failed")
 sys.exit(1 if fails else 0)
