@@ -54,6 +54,57 @@ except ValueError as x:
     said = str(x)
 check("nonsense numbers are refused in plain words", said, "Those numbers aren't valid.")
 
+# ---- points and holds, on a pretend stream
+from pathlib import Path
+from studio import creators, ctx, jobs, live
+from tests.fakestream import make_buffer
+ctx.set_uid("u_picks1")
+jobs.submit_live = lambda fn: fn()                     # the live worker is not running in tests: do it here
+cr = creators.create({"name": "Pick Tester"})
+job = jobs.create({"type": "live", "url": "https://www.twitch.tv/x", "name": "x live"}, {}, enqueue=False,
+                  creator=cr["id"], kind="live")
+job.update(mode="pick", points=[], cuts=[])
+s = live.Session(job, creators.get(cr["id"]))
+s._align = lambda src, guess, dur: guess               # no speech model in tests: trust the piece clock
+make_buffer(s.buf, seconds=150)
+s.part = 1
+s._scan_segments()
+s.words = [{"w": f"w{i}", "s": float(i), "e": i + 0.5} for i in range(150)]
+check("a pick-mode session knows it", s.pick, True)
+s._add_clip({"start": 60, "end": 90, "peak": 75, "score": 88, "reason": "Big laugh", "from": "ai"})
+check("in pick mode the AI's moment becomes a point, not a clip", (len(job["points"]), len(job["clips"])), (1, 0))
+p = job["points"][0]
+check("the point is at the peak, waiting for its stretch of stream", (p["id"], p["t"], p["hold"]["status"], p["from"]), ("pt001", 75.0, "waiting", "ai"))
+check("the point carries the words around it", "w75" in p["text"] and "w60" in p["text"])
+check("the same moment found again is not listed twice", s._add_clip({"start": 62, "end": 92, "peak": 79, "score": 70, "reason": "again"}), None)
+full = list(s.segments)
+s.segments = [g for g in full if g[2] <= 120]          # the stream has only reached 2:00
+picks.flush_holds(s)
+check("nothing is saved until the stream is a minute past the moment", p["hold"]["status"], "waiting")
+s.segments = full                                      # now it has reached 2:30
+picks.flush_holds(s)
+h = p["hold"]
+check("once it is, the hold is saved", (h["status"], h["error"]), ("ready", None))
+check("...about a minute either side of the moment", h["from"] <= 15 and h["to"] >= 135, True)
+check("...as a file the page can play", (Path(job["dir"]) / h["file"]).suffix == ".mp4" and (Path(job["dir"]) / h["file"]).is_file(), True)
+check("the buffer pieces are left alone for the buffer's own clean-up", any(s.buf.glob("*.ts")), True)
+m = s.mark(20.0)
+check("a moment marked by hand is a point too", (m["from"], m["reason"], m["t"], m["score"]), ("you", "Marked by you", 20.0, 0))
+picks.flush_holds(s)
+check("...and a moment near the start keeps what there is", (m["hold"]["status"], m["hold"]["from"]), ("ready", 0.0))
+for f in s.buf.glob("*.ts"):
+    f.unlink()
+s.ended = True
+late = s.mark(110.0)
+picks.flush_holds(s)
+check("when the pieces are gone the point says so", (late["hold"]["status"], late["hold"]["error"]),
+      ("error", "That part of the stream is no longer in the buffer."))
+brain.ask_ai = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("The AI is not set up on this server."))
+s._ai_check((110.0, 160.0), "Jump: loudness +80%")
+jp = job["points"][-1]
+check("with no AI, a loud moment is still listed", (jp["from"], jp["t"], jp["reason"]), ("jump", 140.0, "Jump: loudness +80%"))
+check("a normal (not pick) recording still makes clips", live.Session({**job, "mode": None, "id": "x"}, creators.get(cr["id"])).pick, False)
+
 # (later tasks add more sections here, above this line)
 print("ALL PASSED" if not fails else f"{len(fails)} failed")
 sys.exit(1 if fails else 0)

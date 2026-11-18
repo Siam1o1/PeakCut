@@ -11,7 +11,7 @@ from pathlib import Path
 
 import numpy as np
 
-from . import alerts, auth, brain, config, creators, ctx, jobs, load, media, transcribe, usage
+from . import alerts, auth, brain, config, creators, ctx, jobs, load, media, picks, transcribe, usage
 
 SESSIONS: dict = {}
 SEG_SEC = 6           # length of each buffer piece
@@ -92,6 +92,7 @@ def mine(jid):
 class Session:
     def __init__(self, job, settings):
         self.job, self.settings = job, settings
+        self.pick = job.get("mode") == "pick"   # Live Transcriber: moments are listed for the clipper, not clipped
         self.dir = Path(job["dir"])
         self.buf = self.dir / "buffer"
         self.buf.mkdir(exist_ok=True)
@@ -335,6 +336,7 @@ class Session:
         """Judge 1 reads only the words. If it finds a moment, judge 2 reads only the loudness and chat activity
         for the same stretch, without seeing the words. A clip is made when both say yes (or as set in Setup)."""
         st = self.settings
+        prev = self.job["points"] if self.pick else self.job["clips"]
         every = int(st.get("ai_every_min", 3)) or 3
         if window:                    # just the stretch around a jump, or around someone saying "clip"
             ws, now = max(0.0, window[0]), window[1]
@@ -350,16 +352,21 @@ class Session:
         if len(win) < 8:
             self.skipped += 1
             return self._verdict(verdict, "Skipped: nobody talking")
-        if len(recent) >= st["live_per_hour"] and not must:
+        if len(recent) >= st["live_per_hour"] and not must and not self.pick:
             self.skipped += 1
             return self._verdict(verdict, f"Skipped: {st['live_per_hour']} clips this hour already")
         usage.set_context(self.job["creator"], self.job["title"] or "Live stream")
         title, up = self.job["title"], self.job["uploader"]
         try:
-            cands, tok = brain.judge_transcript(win, ws, now, title, up, st["min_len"], st["max_len"], self.job["clips"],
+            cands, tok = brain.judge_transcript(win, ws, now, title, up, st["min_len"], st["max_len"], prev,
                                                 n=1 if every <= 2 else 2, must=must)  # Auto (0) asks for one
         except Exception as e:  # noqa: BLE001
             self.job["ai"]["last_error"] = str(e)[-200:]
+            if self.pick and window:      # no AI: a jump in loudness or chat, or "clip it", is still worth listing
+                jump = (why or "").startswith("Jump")
+                t = now - (self.AUTO_AFTER if jump else self.SAID_AFTER + 5)
+                picks.add_point(self, {"start": ws, "end": now, "peak": max(ws, t), "score": 0, "reason": why or "",
+                                       "from": "jump" if jump else "said"})
             return self._verdict(verdict, "AI error: " + str(e)[-80:])
         self.checks += 1
         self.tokens += tok
@@ -388,13 +395,14 @@ class Session:
                 self.rejected += 1
                 self._verdict(verdict, "Reaction judge said no, not clipped")
                 continue
-            if any(abs(c["start"] - k["start"]) < st["min_gap_min"] * 60 for k in self.job["clips"]):
+            if any(abs(c["start"] - k["start"]) < st["min_gap_min"] * 60 for k in prev):
                 self._verdict(verdict, "Too close to the last clip")
                 continue
             why = "Both judges agreed" if both else ("Words judge was very sure" if c["score"] >= 90 and
                                                      st["decide_mode"] == "either" else "Forced: no clip for a while")
             c["judges"] = {"words": c["score"], "reaction": rs or None, "why": why}
             c["reason"] = f"{c['reason']} ({why.lower()}.)"
+            c["from"] = "jump" if (why or "").startswith("Jump") else "said" if why else "ai"
             self._add_clip(c)
             self._verdict(verdict, "Clipped: " + why.lower())
             added += 1
@@ -429,11 +437,16 @@ class Session:
                     t = new_words[i]["s"]
                     if t - self.last_trigger > 45:
                         self.last_trigger = t
-                        self.manual.append({"start": max(0.0, t - 30), "end": t + 2, "why": f'Someone said "{p}"'})
+                        self.manual.append({"start": max(0.0, t - 30), "end": t + 2, "t": t, "from": "trigger", "why": f'Someone said "{p}"'})
 
     def _manual_step(self):
         for req in [m for m in self.manual if m["end"] <= self.t_done or self.ended]:
             self.manual.remove(req)
+            if self.pick:          # a trigger word in pick mode: list the moment, no AI call needed
+                t = req.get("t", req["end"])
+                picks.add_point(self, {"start": req["start"], "end": req["end"], "peak": max(req["start"], t - 5),
+                                       "score": 0, "reason": req.get("why") or "Marked", "from": req.get("from", "trigger")})
+                continue
             text = " ".join(w["w"] for w in self.words if req["start"] <= w["s"] <= req["end"])
             usage.set_context(self.job["creator"], self.job["title"] or "Live stream")
             c = brain.describe(text, self.job["title"], self.job["uploader"])
@@ -443,6 +456,8 @@ class Session:
             self._add_clip(c)
 
     def _add_clip(self, c):
+        if self.pick:
+            return picks.add_point(self, c)
         self.n += 1
         c.update(id=f"clip{self.n:03d}", style=self.settings["style"], layout=self.settings["layout"],
                  status="queued", version=0, made_at=time.time())
@@ -450,6 +465,7 @@ class Session:
             self.job["clips"].append(c)
         jobs.save(self.job)
         jobs.submit_live(lambda: self._render(c))
+        return c
 
     def _render(self, clip):
         """Runs on the render worker: copy the needed buffer pieces, then make the clip."""
@@ -520,6 +536,10 @@ class Session:
             raise ValueError("Nothing has been recorded yet.")
         self.manual.append({"start": max(0.0, end - seconds), "end": end})
 
+    def mark(self, t):
+        """The clipper marked this moment in the transcript (Live Transcriber)."""
+        return picks.add_point(self, {"start": t, "end": t, "peak": t, "score": 0, "reason": "Marked by you", "from": "you"})
+
     def _publish(self):
         elapsed = self.samples / SR
         lines = brain.make_lines([w for w in self.words if w["s"] >= self.t_done - 45])[-5:]
@@ -553,6 +573,8 @@ class Session:
                     self.job.update(status="live", stage="Recording")
                     creators.log(cid, f"Recording started: {self.job['title']}")
                 self._manual_step()
+                if self.pick:
+                    picks.flush_holds(self)
                 # Three ways the AI is asked: on the creator's schedule (every N minutes), and always, when the
                 # stream suddenly gets louder or chat busier, or when someone says "clip".
                 every = int(self.settings.get("ai_every_min", 3)) or 3
@@ -571,7 +593,8 @@ class Session:
                 self._publish()
             except Exception as e:  # noqa: BLE001
                 self.job["ai"]["last_error"] = str(e)[-200:]
-            if (self.user_stopped and not self.manual) or (self.ended and not busy and len(self.pending) < SR * 2 and not self.manual):
+            holds = self.pick and bool(picks.waiting(self))
+            if (self.user_stopped and not self.manual and not holds) or (self.ended and not busy and len(self.pending) < SR * 2 and not self.manual and not holds):
                 break
             if not busy:
                 time.sleep(2)
@@ -625,6 +648,11 @@ def recover(job):
     for k in todo:
         jobs.submit_live(lambda k=k: s._render(k))
 
+    for p in job.get("points", []):
+        if p["hold"]["status"] in ("waiting", "saving"):     # interrupted: save it from the pieces still on disk
+            p["hold"]["status"] = "saving"
+            jobs.submit_live(lambda p=p: picks.save_hold(s, p))
+
     def cleanup():
         for f in s.buf.glob("*"):
             f.unlink(missing_ok=True)
@@ -635,7 +663,7 @@ def recover(job):
     jobs.submit_live(cleanup)
 
 
-def start_session(creator: dict, url=None) -> dict:
+def start_session(creator: dict, url=None, mode="auto") -> dict:
     url = normalize(url or creator.get("channel") or "")
     if not re.match(r"^https?://[^/]+\.[^/]+/", url + "/"):
         raise ValueError("Add this creator's channel link first.")
@@ -657,6 +685,8 @@ def start_session(creator: dict, url=None) -> dict:
     job = jobs.create({"type": "live", "url": url, "name": f"{creator['name']} live"}, {}, enqueue=False,
                       creator=creator["id"], kind="live")
     job.update(status="live", stage="Connecting to the stream")
+    if mode == "pick":
+        job.update(mode="pick", points=[], cuts=[])
     jobs.save(job)
     Session(job, creator).start()
     return job
@@ -745,19 +775,19 @@ def _resume_recordings(paused):
     time.sleep(10)
     for _ in range(6):
         left = []
-        for uid, cid, url in paused:
+        for uid, cid, url, mode in paused:
             with ctx.as_user(uid):
                 try:
                     c = creators.get(cid)
                     if not c or active_for(cid):
                         continue
                     resolve(normalize(url))      # raises NotLive if the stream has ended: no empty recording is made
-                    start_session(c, url)
+                    start_session(c, url, mode)
                     creators.log(cid, "Recording picked up again after a server update")
                 except NotLive:
                     continue                  # the stream ended while the server was away
                 except Exception:  # noqa: BLE001 - try again shortly
-                    left.append((uid, cid, url))
+                    left.append((uid, cid, url, mode))
         if not left:
             return
         paused = left
@@ -771,7 +801,7 @@ def start():
             with ctx.as_user(j["user"]):
                 recover(j)
         if j.get("was_live") and j.get("creator"):
-            paused.append((j["user"], j["creator"], j["source"]["url"]))
+            paused.append((j["user"], j["creator"], j["source"]["url"], j.get("mode") or "auto"))
             j.pop("was_live", None)
             jobs.save(j)
     if paused:
