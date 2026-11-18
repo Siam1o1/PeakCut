@@ -817,7 +817,7 @@ dialog[open]{animation:fadein .16s ease}
 .lt-lines .ln{display:grid;grid-template-columns:52px 1fr auto;gap:8px;align-items:start;padding:6px;border-radius:8px}
 .lt-lines .ln:hover{background:var(--muted)}
 .lt-lines time{color:var(--faint);font-variant-numeric:tabular-nums;font-size:12px;padding-top:2px}
-.lt-lines .ln .btn{opacity:0}.lt-lines .ln:hover .btn,.lt-lines .ln .btn:focus{opacity:1}
+.lt-lines .ln .btn{color:var(--faint)}.lt-lines .ln .btn:hover,.lt-lines .ln .btn:focus{color:var(--brand-deep)}
 .pt{border:1px solid var(--line);border-radius:12px;padding:12px;margin-bottom:12px;display:flex;flex-direction:column;gap:8px}
 .pt-head{display:flex;align-items:center;gap:8px}.pt-head .grow{flex:1}
 .pt video{width:100%;border-radius:8px;background:#17110E;aspect-ratio:16/9}
@@ -834,7 +834,7 @@ dialog[open]{animation:fadein .16s ease}
 .bx{position:absolute;border:2px solid #fff;border-radius:4px;cursor:move}
 .bx.cam{border-color:#FF8B33}.bx.game{border-color:#6BD7FF}
 .bx span{position:absolute;left:4px;top:4px;font-size:11px;font-weight:600;color:#fff;background:rgba(0,0,0,.55);padding:1px 6px;border-radius:4px}
-.bx i{position:absolute;right:-6px;bottom:-6px;width:12px;height:12px;border-radius:50%;background:#fff;cursor:nwse-resize}
+.bx i{position:absolute;right:2px;bottom:2px;width:12px;height:12px;border-radius:50%;background:#fff;cursor:nwse-resize}
 .bx-row{display:flex;gap:16px;align-items:flex-start;flex-wrap:wrap}
 .bx-row canvas{border-radius:8px;background:#17110E;width:135px;height:240px}
 </style>
@@ -1276,7 +1276,7 @@ function moveInd() {
 function drawShell() {  const nav = (v, icon, label, extra = "") => `<button class="nav-item ${S.view === v ? "on" : ""}" data-act="go" data-v="${esc(v)}" title="${esc(label)}">${icon}<span class="label">${esc(label)}</span>${extra}</button>`;
   put($("#nav"), nav("overview", navIc("home", "overview"), "Home") +
     nav("library", navIc("film", "library"), "All videos", (() => { const w = S.jobs.filter(j => ["queued", "running"].includes(j.status)).length;
-      return w ? `<span class="working" title="${w} working now"><i></i>${w} working</span>` : S.jobs.length ? `<span class="count">${S.jobs.length}</span>` : ""; })()) +
+      return w ? `<span class="working" title="${w} working now"><i></i>${w} working</span>` : S.jobs.some(j => j.mode !== "pick") ? `<span class="count">${S.jobs.filter(j => j.mode !== "pick").length}</span>` : ""; })()) +
     nav("transcriber", navIc("radio", "transcriber"), "Live Transcriber",
       S.jobs.some(j => j.mode === "pick" && j.status === "live") ? `<span class="sb-tag rec" title="Recording now"><i></i>Rec</span>` : "") +
     `<h4><span>Creators</span></h4>` +
@@ -1305,7 +1305,7 @@ function drawShell() {  const nav = (v, icon, label, extra = "") => `<button cla
     title = c.name;
     pic = cav(c);
     subHtml = statusBadge(c);
-    const nJobs = S.jobs.filter(j => j.creator === c.id).length, nLog = (c.log || []).length;
+    const nJobs = S.jobs.filter(j => j.creator === c.id && j.mode !== "pick").length, nLog = (c.log || []).length;
     tabs = [["clips", "Clips", "scissors", nJobs], ["setup", "Setup", "cog", 0], ["activity", "Activity", "clock", nLog]].map(([k, l, i, n]) =>
       `<button class="tabbtn ${S.ctab === k ? "on" : ""}" data-act="tab" data-t="${k}" role="tab" aria-selected="${S.ctab === k}">${ic(i)}${l}${n ? `<span class="n">${n > 99 ? "99+" : n}</span>` : ""}</button>`).join("");
     act = c.live_job ? `<button class="btn danger" data-act="stoplive" data-j="${esc(c.live_job)}">${ic("stop")}Stop recording</button>`
@@ -2201,10 +2201,10 @@ function ltKeep() {          // keep what the clipper typed in the number boxes 
   $$("#ltlive input[id^=lead_], #ltlive input[id^=len_], #ltdone input[id^=lead_], #ltdone input[id^=len_]").forEach(i => {
     const [k, pid] = i.id.split("_"); (S.ltIn[pid] = S.ltIn[pid] || {})[k] = Number(i.value); });
 }
-function ltVal(p) {
-  const c = S.creators.find(x => x.id === S.ltCreator) || {};
+function ltVal(p, j) {
+  const c = S.creators.find(x => x.id === (j && j.creator)) || {};
   const v = (S.ltIn || {})[p.id] || {};
-  return {lead: v.lead ?? 20, len: v.len ?? (c.max_len || 60)};
+  return {lead: v.lead ?? 20, len: v.len ?? Math.min(120, Math.max(5, c.max_len || 60))};
 }
 function cutHtml(j, c) {
   const act = c.status === "making" ? `<span class="sub">Making…</span>`
@@ -2216,7 +2216,7 @@ function cutHtml(j, c) {
     ${c.note ? `<p class="sub" style="flex-basis:100%;margin:0">${esc(c.note)}</p>` : ""}</div>`;
 }
 function ptHtml(j, p) {
-  const h = p.hold, v = ltVal(p), cuts = (j.cuts || []).filter(c => c.point === p.id);
+  const h = p.hold, v = ltVal(p, j), cuts = (j.cuts || []).filter(c => c.point === p.id);
   const kept = h.status === "ready" ? `<video src="/media/${j.id}/${esc(h.file)}#t=${Math.max(0, p.t - v.lead - h.from).toFixed(1)}" preload="metadata" controls playsinline></video>
       <div class="nsteps">${stepper("lead_" + p.id, "Seconds before", v.lead, 0, 60, 5, "s")}${stepper("len_" + p.id, "Length", v.len, 5, 120, 5, "s")}</div>
       <button class="btn primary" data-act="ptcut" data-j="${j.id}" data-p="${esc(p.id)}">${ic("down")}Download clip</button>`
@@ -2232,19 +2232,21 @@ function drawTranscriber() {
   const st = $("#ltstart"); if (!st) return;
   const busy = document.activeElement && document.activeElement.closest?.("#ltlive, #ltdone") && document.activeElement.matches("input");
   ltKeep();
+  const playing = $$("#ltlive video, #ltdone video").some(v => !v.paused && !v.ended);
   const live = ltJobs().find(j => j.status === "live"), done = ltJobs().filter(j => j.status !== "live");
   if (!S.ltCreator) S.ltCreator = live?.creator || S.creators[0]?.id || "";
   if (live) S.ltCreator = live.creator;
-  put(st, live ? `<div class="lt-start"><span class="pill live"><span class="dot"></span>Live</span><b>${esc(live.title || live.source.name)}</b>
+  const typing = !live && ($("#lt_url")?.value || st.contains(document.activeElement));
+  if (!typing) put(st, live ? `<div class="lt-start"><span class="pill live"><span class="dot"></span>Live</span><b>${esc(live.title || live.source.name)}</b>
         <span class="sub">${esc(live.stage)} · ${fmt(live.live?.elapsed || 0)} recorded</span><span class="grow"></span>
         <button class="btn danger" data-act="stoplive" data-j="${live.id}">${ic("stop")}Stop</button></div>`
     : `<form class="lt-start" id="ltform">${picker("lt_creator", "Creator", [{v:"", label:"New creator from the link", icon:"plus"}, ...S.creators.map(x => ({v:x.id, label:x.name}))], S.ltCreator)}
         <div class="composer-input">${ic("link")}<input id="lt_url" placeholder="Stream link (empty: use the creator's channel)" autocomplete="off" aria-label="Stream link"></div>
         <button class="btn primary" id="lt_go"><span class="rdot"></span>Start</button></form>`);
   $("#ltlive").hidden = !live;
-  if (live && !busy) put($("#ltpoints"), (live.points || []).length ? [...live.points].reverse().map(p => ptHtml(live, p)).join("")
+  if (live && !busy && !playing) put($("#ltpoints"), (live.points || []).length ? [...live.points].reverse().map(p => ptHtml(live, p)).join("")
     : `<p class="sub">Moments appear here as they happen. You can also press Mark on any line of the transcript.</p>`);
-  if (!busy) put($("#ltdone"), done.length ? `<h3 class="lt-h">Finished recordings</h3>` + done.map(j => `<div class="pt" style="gap:12px">
+  if (!busy && !playing) put($("#ltdone"), done.length ? `<h3 class="lt-h">Finished recordings</h3>` + done.map(j => `<div class="pt" style="gap:12px">
       <div class="pt-head"><b>${esc(j.title || j.source.name)}</b><span class="sub">${when(j.created)} · ${(j.points || []).length} moments</span><span class="grow"></span>
         <button class="btn sm icon ghost" data-act="deljob" data-j="${j.id}" aria-label="Delete this recording">${ic("trash")}</button></div>
       ${[...(j.points || [])].reverse().map(p => ptHtml(j, p)).join("")}</div>`).join("")
@@ -2254,7 +2256,12 @@ function drawTranscriber() {
     const a = document.createElement("a"); a.href = `/media/${j.id}/${c.file}?download=1`; a.download = ""; document.body.append(a); a.click(); a.remove();
   }
 }
+let ltBusy = false;
 async function ltPoll() {
+  if (ltBusy) return; ltBusy = true;
+  try { await ltPoll1(); } finally { ltBusy = false; }
+}
+async function ltPoll1() {
   const j = ltJobs().find(x => x.status === "live"), box = $("#ltlines");
   if (!box || !j) return;
   if (S.ltJ !== j.id) { S.ltJ = j.id; S.ltAfter = -1; box.innerHTML = ""; }
@@ -2310,7 +2317,7 @@ function openBoxes(src, cid, cur, done) {
   stage.onpointerdown = e => {
     const [x, y] = at(e), b = B[B.mode];
     if (e.target.tagName === "I" && e.target.parentElement.id === "bx_" + B.mode) drag = {kind: "size"};
-    else if (b && x >= b[0] && x <= b[0] + b[2] && y >= b[1] && y <= b[1] + b[3]) drag = {kind: "move", dx: x - b[0], dy: y - b[1]};
+    else if (b && !(b[2] >= 0.99 && b[3] >= 0.99) && x >= b[0] && x <= b[0] + b[2] && y >= b[1] && y <= b[1] + b[3]) drag = {kind: "move", dx: x - b[0], dy: y - b[1]};
     else { B[B.mode] = [x, y, 0.05, 0.05]; drag = {kind: "draw", x, y}; }
     stage.setPointerCapture(e.pointerId); show();
   };
@@ -2348,7 +2355,7 @@ function openCutEdit(jid, cutId) {
     <div class="ob"><div class="ot">Caption style</div>${choice("ce_style", Object.entries(S.status.styles).map(([k, v]) => ({v:k, label:v, prev:capPrev(k)})), cr.style || "bounce")}</div>
     <div class="ob"><div class="ot">Layout</div>${choice("ce_layout", Object.entries(S.status.layouts).map(([k, v]) => ({v:k, label:LAYOUT_SHORT[k] || v, title:v, prev:`<span class="lay-prev ${esc(k)}"><span class="ph"><i></i></span></span>`})), cr.layout || "blur")}</div>
     <p class="sub" id="ce_box">${split ? "Facecam box saved for this creator." : "For Game + cam, draw the facecam box once."} <button type="button" class="btn sm" id="ce_draw">${split ? "Change the boxes" : "Draw the facecam box"}</button></p>
-    <div class="dlg-foot"><button class="btn" value="no">Cancel</button><button type="button" class="btn primary" id="ce_go">${ic("scissors")}Make vertical clip</button></div></form>`;
+    <div class="dlg-foot"><button type="button" class="btn" id="ce_no">Cancel</button><button type="button" class="btn primary" id="ce_go">${ic("scissors")}Make vertical clip</button></div></form>`;
   const go_ = async () => {
     const body = {hook: $("#ce_hook").value.trim(), style: $("#ce_style").value, layout: $("#ce_layout").value};
     if (body.layout === "split") { if (!split) return openBoxes(frame, j.creator, null, s => { split = s; go_(); }); body.split = split; }
@@ -2360,8 +2367,9 @@ function openCutEdit(jid, cutId) {
       tick();
     } catch (x) { toast(x.message, "bad"); }
   };
-  $("#ce_draw").onclick = () => openBoxes(frame, j.creator, split, s => { split = s; $("#ce_box").firstChild.textContent = "Facecam box saved for this creator. "; });
-  $("#ce_go").onclick = go_;
+  $("#ce_draw").onclick = () => openBoxes(frame, j.creator, split, s => { split = s; $("#ce_box").firstChild.textContent = "Facecam box saved for this creator. "; $("#ce_draw").textContent = "Change the boxes"; });
+  $("#ce_go").onclick = go_; $("#ce_no").onclick = () => d.close();
+  d.querySelector("form").onsubmit = e => { e.preventDefault(); go_(); };
   d.showModal();
 }
 
@@ -2600,7 +2608,8 @@ document.addEventListener("click", async e => {
     if (a === "ltmark") { await send(`/api/live/${d.j}/points`, {t:Number(d.t)}); toast("Added to the moments.", "ok"); return tick(); }
     if (a === "ptcut") {
       const lead = Number($("#lead_" + d.p)?.value ?? 20), length = Number($("#len_" + d.p)?.value ?? 60);
-      const cut = await send(`/api/live/${d.j}/points/${d.p}/cuts`, {lead, length});
+      b.disabled = true;
+      let cut; try { cut = await send(`/api/live/${d.j}/points/${d.p}/cuts`, {lead, length}); } finally { b.disabled = false; }
       (S.ltAuto = S.ltAuto || new Set()).add(cut.id);
       toast(cut.note || "Making your clip… it downloads by itself when it is ready.", "ok"); return tick();
     }
@@ -2668,8 +2677,9 @@ document.addEventListener("click", async e => {
       if (body.layout === "split") {
         const j = jobOf(D.jid), c = j?.clips.find(x => x.id === D.cid);
         const boxes = D.split || c?.split || S.creators.find(x => x.id === j?.creator)?.split;
-        if (!boxes) return toast("Draw the facecam box first: press Draw the facecam box.", "bad");
-        body.split = boxes;
+        const doIt = async bx => { body.split = bx; try { await send(`/api/jobs/${D.jid}/clips/${D.cid}/render`, body); toast("Re-making the clip…", "ok"); tick(); } catch (x) { toast(x.message, "bad"); } };
+        if (!boxes) return openBoxes(`/api/jobs/${D.jid}/clips/${D.cid}/frame`, j?.creator, null, s => { D.split = s; doIt(s); });
+        return doIt(boxes);
       }
       await send(`/api/jobs/${D.jid}/clips/${D.cid}/render`, body); toast("Re-making the clip…", "ok"); return tick();
     }
