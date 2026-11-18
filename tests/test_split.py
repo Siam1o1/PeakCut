@@ -18,6 +18,7 @@ check("no facecam box: nothing", render.clean_split({"game": [0, 0, 1, 1]}), Non
 check("junk: nothing", (render.clean_split("x"), render.clean_split({"cam": [1, "a", 3]}), render.clean_split({"cam": [0, 0, float("nan"), 1]})), (None, None, None))
 check("a box running off the frame is pulled back inside",
       render.clean_split({"cam": [0.9, 0.9, 0.5, 0.5]})["cam"], [0.9, 0.9, 0.1, 0.1])
+check("an infinite facecam height does not crash", render.clean_split({**BOXES, "cam_pct": float("inf")})["cam_pct"], 40)
 check("no gameplay box: the whole frame", render.clean_split({"cam": [0, 0, 0.2, 0.2]})["game"], [0.0, 0.0, 1.0, 1.0])
 check("facecam height is held between 25 and 50", (render.clean_split({**BOXES, "cam_pct": 90})["cam_pct"], render.clean_split({**BOXES, "cam_pct": 3})["cam_pct"]), (50, 25))
 sp = render.clean_split(BOXES)

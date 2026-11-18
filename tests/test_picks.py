@@ -213,6 +213,58 @@ except ValueError as x:
     said = str(x)
 check("a clip that failed to be made says why, not 'still being made'", said, "ffmpeg said no")
 cm["status"] = "ready"
+# ---- final review fixes
+check("a 1 second note is singular", picks.plan_cut(100, 99, 160, 20, 45)[2].startswith("Only 1 second was kept before"), True)
+s1, e1, n1 = picks.plan_cut(100, 40, 101, 0, 60)
+check("the length is singular too", n1, "Only 1 second was kept after this moment, so the clip is 5 seconds long.")
+n2 = picks.plan_cut(100, 99, 101, 1.5, 30)[2]
+check("1 second kept both sides", ("only 1 second was kept before" in n2.lower(), "only 1 second was kept after" in n2.lower()), (True, True))
+
+# ---- after a restart: a moment still waiting for its video is saved from the pieces on disk
+rj = jobs.create({"type": "live", "url": "https://www.twitch.tv/y", "name": "y live"}, {}, enqueue=False,
+                 creator=cr["id"], kind="live")
+rj.update(mode="pick", points=[], cuts=[], status="done")
+rs = live.Session(rj, creators.get(cr["id"]))
+rs._align = lambda src, guess, dur: guess
+make_buffer(rs.buf, seconds=150)
+rs.part = 1
+rs._scan_segments()
+rs._add_clip({"start": 60, "end": 90, "peak": 75, "score": 88, "reason": "Big laugh", "from": "ai"})
+rj["points"][0]["hold"]["status"] = "waiting"
+jobs.save(rj)
+live.SESSIONS.pop(rj["id"], None)
+jobs._jobs.pop(rj["id"], None); jobs._by_user.get("u_picks1", {}).pop(rj["id"], None)
+jobs._load_file(Path(rj["dir"]) / "job.json", "u_picks1")
+back = jobs._jobs[rj["id"]]
+check("a pick recording with a waiting moment and its stream on disk is marked for recovery", back.get("recover"), True)
+real_align = live.Session._align
+live.Session._align = lambda self, src, guess, dur: guess     # no speech model in tests
+live.recover(back)
+live.Session._align = real_align
+check("after the restart the waiting moment is saved", back["points"][0]["hold"]["status"], "ready")
+check("...and the recovery mark is cleared", "recover" in back, False)
+
+nb = jobs.create({"type": "live", "url": "https://www.twitch.tv/z", "name": "z live"}, {}, enqueue=False,
+                 creator=cr["id"], kind="live")
+nb.update(mode="pick", cuts=[], status="done",
+          points=[{"id": "pt001", "t": 30.0, "score": 0, "reason": "r", "from": "you", "text": "",
+                   "hold": {"status": "waiting", "file": None, "from": None, "to": None, "error": None}}])
+jobs.save(nb)
+picks.after_restart()
+check("a waiting moment with no stream left is marked as lost, in plain words",
+      (nb["points"][0]["hold"]["status"], nb["points"][0]["hold"]["error"]),
+      ("error", "PeakCut was closed before this moment's video was saved."))
+bad = picks.cut_of(job, cm["id"])
+cm_file = bad["file"]
+bad["file"] = "cuts/missing.mp4"
+count = len(jobs.all_jobs())
+try:
+    picks.edit_cut(job, cm["id"], {"style": ["x"], "layout": {"a": 1}}); said = ""
+except ValueError as x:
+    said = str(x)
+check("a cut whose file is gone says so and leaves no half-made video", (said, len(jobs.all_jobs())),
+      ("This clip couldn't be opened for editing. Make it again.", count))
+bad["file"] = cm_file
 # (later tasks add more sections here, above this line)
 print("ALL PASSED" if not fails else f"{len(fails)} failed")
 sys.exit(1 if fails else 0)

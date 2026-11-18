@@ -1139,7 +1139,7 @@ function drawStream() {
     <h3>${esc(p.title || "Live now")}</h3><p class="by">${esc(p.name || c.name)}</p>
     ${stats.length ? `<div class="sstats">${stats.map(([v, l]) => `<div><b>${esc(v)}</b><span>${esc(l)}</span></div>`).join("")}</div>` : ""}
     <div class="cta">${rec
-      ? `<button class="btn danger" data-act="stoplive" data-j="${esc(rec)}">${ic("stop")}Stop recording</button><small>Recording now. Clips appear below as they're made.</small>`
+      ? `<button class="btn danger" data-act="stoplive" data-j="${esc(rec)}">${ic("stop")}Stop recording</button><small>${jobOf(rec)?.mode === "pick" ? "Recording in the Live Transcriber." : "Recording now. Clips appear below as they're made."}</small>`
       : `<button class="btn primary" data-act="golive" data-url="${esc(p.channel)}"><span class="rdot"></span>Record this stream</button><small>PeakCut watches it and clips the best moments as they happen.</small>`}</div>`);
 }
 function liveOn(c) { return Object.entries(c.profiles || {}).filter(([k, p]) => p.live && c.channels?.[k] === p.channel).sort(([, p]) => p.channel === c.channel ? -1 : 1); }
@@ -2199,11 +2199,11 @@ const ltJobs = () => S.jobs.filter(j => j.mode === "pick");
 function ltKeep() {          // keep what the clipper typed in the number boxes across redraws
   S.ltIn = S.ltIn || {};
   $$("#ltlive input[id^=lead_], #ltlive input[id^=len_], #ltdone input[id^=lead_], #ltdone input[id^=len_]").forEach(i => {
-    const [k, pid] = i.id.split("_"); (S.ltIn[pid] = S.ltIn[pid] || {})[k] = Number(i.value); });
+    const [k, jid, pid] = i.id.split("_"); const key = jid + ":" + pid; (S.ltIn[key] = S.ltIn[key] || {})[k] = Number(i.value); });
 }
 function ltVal(p, j) {
   const c = S.creators.find(x => x.id === (j && j.creator)) || {};
-  const v = (S.ltIn || {})[p.id] || {};
+  const v = (S.ltIn || {})[`${j.id}:${p.id}`] || {};
   return {lead: v.lead ?? 20, len: v.len ?? Math.min(120, Math.max(5, c.max_len || 60))};
 }
 function cutHtml(j, c) {
@@ -2218,7 +2218,7 @@ function cutHtml(j, c) {
 function ptHtml(j, p) {
   const h = p.hold, v = ltVal(p, j), cuts = (j.cuts || []).filter(c => c.point === p.id);
   const kept = h.status === "ready" ? `<video src="/media/${j.id}/${esc(h.file)}#t=${Math.max(0, p.t - v.lead - h.from).toFixed(1)}" preload="metadata" controls playsinline></video>
-      <div class="nsteps">${stepper("lead_" + p.id, "Seconds before", v.lead, 0, 60, 5, "s")}${stepper("len_" + p.id, "Length", v.len, 5, 120, 5, "s")}</div>
+      <div class="nsteps">${stepper(`lead_${j.id}_${p.id}`, "Seconds before", v.lead, 0, 60, 5, "s")}${stepper(`len_${j.id}_${p.id}`, "Length", v.len, 5, 120, 5, "s")}</div>
       <button class="btn primary" data-act="ptcut" data-j="${j.id}" data-p="${esc(p.id)}">${ic("down")}Download clip</button>`
     : h.status === "error" ? `<div class="err" style="margin:0">${esc(h.error)}</div>`
     : `<p class="sub">Keeping this part of the stream… it is ready a minute after the moment.</p>`;
@@ -2247,7 +2247,7 @@ function drawTranscriber() {
   if (live && !busy && !playing) put($("#ltpoints"), (live.points || []).length ? [...live.points].reverse().map(p => ptHtml(live, p)).join("")
     : `<p class="sub">Moments appear here as they happen. You can also press Mark on any line of the transcript.</p>`);
   if (!busy && !playing) put($("#ltdone"), done.length ? `<h3 class="lt-h">Finished recordings</h3>` + done.map(j => `<div class="pt" style="gap:12px">
-      <div class="pt-head"><b>${esc(j.title || j.source.name)}</b><span class="sub">${when(j.created)} · ${(j.points || []).length} moments</span><span class="grow"></span>
+      <div class="pt-head"><b>${esc(j.title || j.source.name)}</b>${j.status === "error" ? `<span class="err" style="margin:0">${esc(j.error || j.stage)}</span>` : `<span class="sub">${esc(j.stage)}</span>`}<span class="sub">${when(j.created)} · ${(j.points || []).length} moments</span><span class="grow"></span>
         <button class="btn sm icon ghost" data-act="deljob" data-j="${j.id}" aria-label="Delete this recording">${ic("trash")}</button></div>
       ${[...(j.points || [])].reverse().map(p => ptHtml(j, p)).join("")}</div>`).join("")
     : live ? "" : `<div class="empty"><img src="/brand/favicon.svg" alt=""><b>Nothing recorded yet</b>Choose a creator, paste their stream link if you like, and press Start.</div>`);
@@ -2549,7 +2549,7 @@ document.addEventListener("click", async e => {
     if (a === "selclear") { sel().clear(); return render(); }
     if (a === "selall") {
       const cid = creatorId();
-      (cid ? S.jobs.filter(j => j.creator === cid) : S.jobs).forEach(j => { if (!["queued", "running", "live"].includes(j.status)) { sel().add("j:" + j.id); j.clips.forEach(c => sel().delete(`c:${j.id}:${c.id}`)); } });
+      (cid ? S.jobs.filter(j => j.creator === cid) : S.jobs).filter(j => j.mode !== "pick").forEach(j => { if (!["queued", "running", "live"].includes(j.status)) { sel().add("j:" + j.id); j.clips.forEach(c => sel().delete(`c:${j.id}:${c.id}`)); } });
       return render();
     }
     if (a === "seldel") {
@@ -2613,7 +2613,7 @@ document.addEventListener("click", async e => {
     if (a === "clipnow") { await send(`/api/live/${d.j}/clip`, {seconds:Number(d.s)}); return toast(`Clipping the last ${d.s} seconds…`, "ok"); }
     if (a === "ltmark") { await send(`/api/live/${d.j}/points`, {t:Number(d.t)}); toast("Added to the moments.", "ok"); return tick(); }
     if (a === "ptcut") {
-      const lead = Number($("#lead_" + d.p)?.value ?? 20), length = Number($("#len_" + d.p)?.value ?? 60);
+      const lead = Number($(`#lead_${d.j}_${d.p}`)?.value ?? 20), length = Number($(`#len_${d.j}_${d.p}`)?.value ?? 60);
       b.disabled = true;
       let cut; try { cut = await send(`/api/live/${d.j}/points/${d.p}/cuts`, {lead, length}); } finally { b.disabled = false; }
       (S.ltAuto = S.ltAuto || new Set()).add(cut.id);

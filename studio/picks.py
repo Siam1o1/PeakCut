@@ -25,6 +25,11 @@ def _s(x):
     return str(round(x))
 
 
+def _secs(x):
+    n = round(x)
+    return f"{n} second" if n == 1 else f"{n} seconds"
+
+
 def plan_cut(t, hold_from, hold_to, lead, length):
     """Start and end of a clip `lead` seconds before the moment `t` and `length` long, kept inside what was saved
     (hold_from..hold_to), and one sentence saying what had to change ("" when nothing did)."""
@@ -39,14 +44,16 @@ def plan_cut(t, hold_from, hold_to, lead, length):
     start, notes = t - lead, []
     if start < hold_from:
         start = hold_from
-        notes.append(f"only {_s(t - hold_from)} seconds were kept before this moment, so the clip starts there")
+        n = round(t - hold_from)
+        notes.append(f"only {_secs(n)} {'was' if n == 1 else 'were'} kept before this moment, so the clip starts there")
     end = start + length
     if end > hold_to:
         end = hold_to
         if end - start < LEN_MIN:
             start = max(hold_from, end - LEN_MIN)
-        notes.append(f"only {_s(hold_to - t)} seconds were kept after this moment, "
-                     f"so the clip is {_s(end - start)} seconds long")
+        n = round(hold_to - t)
+        notes.append(f"only {_secs(n)} {'was' if n == 1 else 'were'} kept after this moment, "
+                     f"so the clip is {_secs(end - start)} long")
     note = "; ".join(notes)
     return round(start, 2), round(end, 2), (note[:1].upper() + note[1:] + ".") if note else ""
 
@@ -202,6 +209,11 @@ def delete_point(job, pid):
 def after_restart():
     """Cuts that were being made when PeakCut stopped: marked so the clipper can make them again."""
     for job in jobs.all_jobs():
+        no_video = not any((Path(job["dir"]) / "buffer").glob("*.ts"))
+        for p in job.get("points", []):
+            if no_video and p["hold"]["status"] in ("waiting", "saving"):
+                p["hold"].update(status="error", error="PeakCut was closed before this moment's video was saved.")
+                jobs.save(job)
         stuck = [c for c in job.get("cuts", []) if c.get("status") == "making"]
         for c in stuck:
             c.update(status="error", error="PeakCut was closed while this clip was being made. Make it again.")
@@ -232,8 +244,9 @@ def edit_cut(job, cut_id, options):
         raise ValueError("This clip is still being made. Try again in a moment.")
     p = point_of(job, cut["point"])
     cr = (creators.get(job["creator"]) if job.get("creator") else None) or {}
-    style = options.get("style") if options.get("style") in render.STYLES else cr.get("style", "bounce")
-    layout = options.get("layout") if options.get("layout") in render.LAYOUTS else cr.get("layout", "blur")
+    st, ly = options.get("style"), options.get("layout")
+    style = st if isinstance(st, str) and st in render.STYLES else cr.get("style", "bounce")
+    layout = ly if isinstance(ly, str) and ly in render.LAYOUTS else cr.get("layout", "blur")
     hook = str(options.get("hook") or "").strip()[:60]
     boxes = render.clean_split(options.get("split"))
     words = [dict(w, s=round(w["s"] - cut["start"], 2), e=round(w["e"] - cut["start"], 2))
@@ -242,8 +255,12 @@ def edit_cut(job, cut_id, options):
     new = jobs.create({"type": "cut", "path": "", "name": f"{job.get('title') or 'Live stream'} at {m}:{s:02d}"},
                       {"style": style, "layout": layout}, enqueue=False, creator=job.get("creator"))
     dest = Path(new["dir"]) / "source.mp4"
-    shutil.copyfile(Path(job["dir"]) / cut["file"], dest)
-    meta = media.probe(dest)
+    try:
+        shutil.copyfile(Path(job["dir"]) / cut["file"], dest)
+        meta = media.probe(dest)
+    except Exception:  # noqa: BLE001
+        jobs.delete(new["id"])
+        raise ValueError("This clip couldn't be opened for editing. Make it again.")
     (Path(new["dir"]) / "words.json").write_text(json.dumps(words), encoding="utf-8")
     clip = {"id": "clip001", "start": 0.0, "end": round(meta["duration"], 2), "score": p["score"],
             "reason": p["reason"], "hook": hook, "title": new["source"]["name"], "description": "", "hashtags": [], "highlight_words": [],

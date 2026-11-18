@@ -410,7 +410,9 @@ class Session:
             c["judges"] = {"words": c["score"], "reaction": rs or None, "why": why}
             c["reason"] = f"{c['reason']} ({why.lower()}.)"
             c["from"] = "jump" if (trigger or "").startswith("Jump") else "said" if trigger else "ai"
-            self._add_clip(c)
+            if self._add_clip(c) is None:       # pick mode: this moment is already in the list
+                self._verdict(verdict, "Already in the list")
+                continue
             self._verdict(verdict, "Clipped: " + why.lower())
             added += 1
             must = False
@@ -611,13 +613,14 @@ class Session:
         failed = bool(self.job.get("error")) and not started
         self.job.update(status="error" if failed else "done", stage="Could not record" if failed else self.end_note)
         jobs.save(self.job)
-        creators.log(cid, f"Recording finished ({self.end_note.lower()}): {len(self.job['clips'])} clips, "
+        made = f"{len(self.job['points'])} moments" if self.pick else f"{len(self.job['clips'])} clips"
+        creators.log(cid, f"Recording finished ({self.end_note.lower()}): {made}, "
                           f"{round(self.samples / SR / 60)} min" if not failed else f"Recording failed: {self.job['error']}")
 
         if failed:
             alerts.notify(f"recording failed for {self.job['source']['name']}: {self.job['error']}")
         else:
-            alerts.notify(f"recording finished for {self.job['source']['name']}: {len(self.job['clips'])} clips, "
+            alerts.notify(f"recording finished for {self.job['source']['name']}: {made}, "
                           f"{round(self.samples / SR / 60)} min.")
 
         def cleanup():  # runs after any queued renders, then frees the buffer
@@ -668,7 +671,8 @@ def recover(job):
             f.unlink(missing_ok=True)
         job.pop("recover", None)
         jobs.save(job)
-        creators.log(job["creator"], f"Finished {len(todo)} clip(s) from a recording interrupted by a restart")
+        what = f"{len(job.get('points', []))} moment(s)" if job.get("mode") == "pick" else f"{len(todo)} clip(s)"
+        creators.log(job["creator"], f"Finished {what} from a recording interrupted by a restart")
 
     jobs.submit_live(cleanup)
 

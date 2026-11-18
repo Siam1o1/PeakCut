@@ -108,7 +108,7 @@ def clean_split(v):
         return None
     try:
         pct = int(float(v.get("cam_pct", 40)))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         pct = 40
     return {"cam": cam, "game": box(v.get("game")) or list(SPLIT_GAME), "cam_pct": max(25, min(50, pct))}
 

@@ -211,6 +211,8 @@ def _load_file(f: Path, uid: str):
     if job.get("status") == "live":
         job.update(status="done", stage="Recording paused by a server update", was_live=True)
     buffered = job.get("kind") == "live" and any((f.parent / "buffer").glob("*.ts"))
+    if buffered and any(p.get("hold", {}).get("status") in ("waiting", "saving") for p in job.get("points", [])):
+        job["recover"] = True   # Live Transcriber: the kept stream is still on disk, live.recover() saves these moments
     for c in job.get("clips", []):
         if c.get("src"):
             c["src"] = _remap(c["src"], f.parent / "clips")
