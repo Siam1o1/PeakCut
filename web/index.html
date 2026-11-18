@@ -808,6 +808,35 @@ dialog[open]{animation:fadein .16s ease}
   .set-sec h2{font-size:16px}
   .ai-big{font-size:24px}
 }
+.lt-start{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:24px;padding:12px;border-radius:14px;background:var(--muted)}
+.lt-start .composer-input{flex:1;min-width:220px}
+.lt-start .grow{flex:1}
+.lt-live{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:20px;margin-bottom:28px}
+.lt-live h3,.lt-h{font-size:13px;font-weight:600;color:var(--dim);margin:0 0 8px}
+.lt-lines{height:min(62vh,640px);overflow:auto;border:1px solid var(--line);border-radius:12px;padding:6px}
+.lt-lines .ln{display:grid;grid-template-columns:52px 1fr auto;gap:8px;align-items:start;padding:6px;border-radius:8px}
+.lt-lines .ln:hover{background:var(--muted)}
+.lt-lines time{color:var(--faint);font-variant-numeric:tabular-nums;font-size:12px;padding-top:2px}
+.lt-lines .ln .btn{opacity:0}.lt-lines .ln:hover .btn,.lt-lines .ln .btn:focus{opacity:1}
+.pt{border:1px solid var(--line);border-radius:12px;padding:12px;margin-bottom:12px;display:flex;flex-direction:column;gap:8px}
+.pt-head{display:flex;align-items:center;gap:8px}.pt-head .grow{flex:1}
+.pt video{width:100%;border-radius:8px;background:#17110E;aspect-ratio:16/9}
+.pt .q{color:var(--dim);font-style:italic}
+.cut{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:8px;border-radius:10px;background:var(--muted)}
+.cut .grow{flex:1}
+@media (max-width:860px){.lt-live{grid-template-columns:1fr}.lt-lines{height:45vh}}
+.lay-prev.split .ph{display:grid;grid-template-rows:3fr 2fr;gap:2px}
+.lay-prev.split .ph i{display:none}
+.lay-prev.split .ph::before,.lay-prev.split .ph::after{content:"";background:var(--line-2);border-radius:2px}
+.boxes{width:min(760px,calc(100vw - 32px))}
+.bx-stage{position:relative;user-select:none;touch-action:none;border-radius:10px;overflow:hidden;background:#17110E}
+.bx-stage img{display:block;width:100%}
+.bx{position:absolute;border:2px solid #fff;border-radius:4px;cursor:move}
+.bx.cam{border-color:#FF8B33}.bx.game{border-color:#6BD7FF}
+.bx span{position:absolute;left:4px;top:4px;font-size:11px;font-weight:600;color:#fff;background:rgba(0,0,0,.55);padding:1px 6px;border-radius:4px}
+.bx i{position:absolute;right:-6px;bottom:-6px;width:12px;height:12px;border-radius:50%;background:#fff;cursor:nwse-resize}
+.bx-row{display:flex;gap:16px;align-items:flex-start;flex-wrap:wrap}
+.bx-row canvas{border-radius:8px;background:#17110E;width:135px;height:240px}
 </style>
 </head>
 <body>
@@ -1247,6 +1276,8 @@ function drawShell() {  const nav = (v, icon, label, extra = "") => `<button cla
   put($("#nav"), nav("overview", navIc("home", "overview"), "Home") +
     nav("library", navIc("film", "library"), "All videos", (() => { const w = S.jobs.filter(j => ["queued", "running"].includes(j.status)).length;
       return w ? `<span class="working" title="${w} working now"><i></i>${w} working</span>` : S.jobs.length ? `<span class="count">${S.jobs.length}</span>` : ""; })()) +
+    nav("transcriber", navIc("radio", "transcriber"), "Live Transcriber",
+      S.jobs.some(j => j.mode === "pick" && j.status === "live") ? `<span class="sb-tag rec" title="Recording now"><i></i>Rec</span>` : "") +
     `<h4><span>Creators</span></h4>` +
     S.creators.map(c => nav("c:" + c.id, cav(c), c.name,
       c.live_job ? `<span class="sb-tag rec" title="Recording now"><i></i>Rec</span>`
@@ -1262,8 +1293,9 @@ function drawShell() {  const nav = (v, icon, label, extra = "") => `<button cla
       <button class="icon-btn bell" data-act="bell" title="Notifications" aria-label="Notifications${S.status.unread ? `, ${S.status.unread} new` : ""}" aria-haspopup="dialog">${ic("bell")}${S.status.unread ? `<span class="dotn">${S.status.unread > 9 ? "9+" : S.status.unread}</span>` : ""}</button></div>` : ""));
   const c = creator();
   const recording = S.creators.filter(x => x.live_job).length;
-  let title = {overview:"Home", library:"All videos", settings:"Settings", usage:"AI usage"}[S.view] || "", sub = "", act = "";
+  let title = {overview:"Home", library:"All videos", settings:"Settings", usage:"AI usage", transcriber:"Live Transcriber"}[S.view] || "", sub = "", act = "";
   if (S.view === "usage") sub = "What the AI has been used for.";
+  if (S.view === "transcriber") sub = "Watch the transcript live, pick the moments, download the clips.";
   if (S.view === "overview") sub = `${greeting()}. ${S.creators.length} creator${S.creators.length === 1 ? "" : "s"}${recording ? `, ${recording} recording now` : ""}.`;
   if (S.view === "library") sub = "Every video and recording, across all creators.";
   if (S.view === "settings") sub = (S.status.accounts === false ? "Your AI key and connected apps." : "Your profile, security and connected apps.");
@@ -1300,7 +1332,7 @@ function drawShell() {  const nav = (v, icon, label, extra = "") => `<button cla
   put($("#title"), `<span>${esc(title)}</span>`); put($("#subtitle"), subHtml ?? esc(sub)); put($("#actions"), act);
 }
 
-const ROUTES = {overview: "", library: "videos", settings: "settings", usage: "usage"};
+const ROUTES = {overview: "", library: "videos", settings: "settings", usage: "usage", transcriber: "transcriber"};
 function pathFor(v, tab) {
   if (v.startsWith("c:")) return `/app/creators/${encodeURIComponent(v.slice(2))}${tab && tab !== "clips" ? "/" + tab : ""}`;
   if (v === "settings") return "/app/settings" + (tab ? "/" + tab : "");
@@ -1334,6 +1366,7 @@ function go(v, tab, fromHistory) {
   else if (v === "library") view.innerHTML = `<div id="add"></div><div id="jobs"></div>`;
   else if (v === "settings") view.innerHTML = `<div id="sform"></div>`;
   else if (v === "usage") { view.innerHTML = `<div id="usage"></div>`; loadUsage(); }
+  else if (v === "transcriber") { view.innerHTML = `<div id="ltstart"></div><div class="lt-live" id="ltlive" hidden><section class="lt-tr"><h3>Transcript</h3><div id="ltlines" class="lt-lines" aria-live="off"></div></section><section><h3>Moments</h3><div id="ltpoints"></div></section></div><div id="ltdone"></div>`; S.ltJ = null; }
   else view.innerHTML = `<div id="stream"></div><div id="cbody"></div>`;   // the live player stays put across tabs: no restart, no rebuffer
   if ($("#add")) drawAdd(v === "overview" ? "hero" : "compact");
   if (v === "overview" && window.GradientASCII) { try { window._gaStop = GradientASCII($("#appAscii"), {colors: ["#ffb27a", "#ffffff", "#ffd2ae", "#ffe0c2", "#fff1e6"], shape: "horizon", lightMode: true, cellSize: 16, density: 0.8, glyphOpacity: 0.26, gradientOpacity: 0.32, glow: 0.06, grain: 0.06, mouseInteraction: false, clickEffect: "none"}); } catch {} }
@@ -1787,7 +1820,7 @@ function askTyped(title, text, mustType, okLabel) {
 function drawJobs() {
   const root = $("#jobs"); if (!root) return;
   const cid = creatorId();
-  let list = cid ? S.jobs.filter(j => j.creator === cid) : S.jobs;
+  let list = (cid ? S.jobs.filter(j => j.creator === cid) : S.jobs).filter(j => j.mode !== "pick");
   const liveBox = $("#live");
   if (liveBox) { const lj = list.find(j => j.status === "live");
     if (!liveBox.querySelector(".pick.open")) put(liveBox, lj ? liveHtml(lj) : "");  // don't redraw under an open menu
@@ -2158,10 +2191,98 @@ function drawClipDlg(full) {
 $("#clipdlg").addEventListener("close", () => { $("#clipdlg").innerHTML = ""; D.jid = null; });
 $("#clipdlg").addEventListener("click", e => { if (e.target === e.currentTarget) e.currentTarget.close(); });
 
+/* ============================================================ Live Transcriber */
+const FROM = {ai:"AI", jump:"Loud moment", said:'"Clip it"', trigger:"Trigger word", you:"Marked by you"};
+const ltJobs = () => S.jobs.filter(j => j.mode === "pick");
+function ltKeep() {          // keep what the clipper typed in the number boxes across redraws
+  S.ltIn = S.ltIn || {};
+  $$("#ltlive input[id^=lead_], #ltlive input[id^=len_], #ltdone input[id^=lead_], #ltdone input[id^=len_]").forEach(i => {
+    const [k, pid] = i.id.split("_"); (S.ltIn[pid] = S.ltIn[pid] || {})[k] = Number(i.value); });
+}
+function ltVal(p) {
+  const c = S.creators.find(x => x.id === S.ltCreator) || {};
+  const v = (S.ltIn || {})[p.id] || {};
+  return {lead: v.lead ?? 20, len: v.len ?? (c.max_len || 60)};
+}
+function cutHtml(j, c) {
+  const act = c.status === "making" ? `<span class="sub">Making…</span>`
+    : c.status === "error" ? `<span class="err" style="margin:0">${esc(c.error)}</span>`
+    : `<a class="btn sm" href="/media/${j.id}/${esc(c.file)}?download=1">${ic("down")}Download</a>
+       <button class="btn sm" data-act="cutedit" data-j="${j.id}" data-c="${esc(c.id)}">${ic("sliders")}${c.edited ? "Edit again" : "Edit"}</button>`;
+  return `<div class="cut"><span class="grow">${ic("film")} ${fmt(c.end - c.start)} clip from ${fmt(c.start)}</span>${act}
+    <button class="btn sm icon ghost" data-act="cutdel" data-j="${j.id}" data-c="${esc(c.id)}" aria-label="Delete this clip">${ic("trash")}</button>
+    ${c.note ? `<p class="sub" style="flex-basis:100%;margin:0">${esc(c.note)}</p>` : ""}</div>`;
+}
+function ptHtml(j, p) {
+  const h = p.hold, v = ltVal(p), cuts = (j.cuts || []).filter(c => c.point === p.id);
+  const kept = h.status === "ready" ? `<video src="/media/${j.id}/${esc(h.file)}#t=${Math.max(0, p.t - v.lead - h.from).toFixed(1)}" preload="metadata" controls playsinline></video>
+      <div class="nsteps">${stepper("lead_" + p.id, "Seconds before", v.lead, 0, 60, 5, "s")}${stepper("len_" + p.id, "Length", v.len, 5, 120, 5, "s")}</div>
+      <button class="btn primary" data-act="ptcut" data-j="${j.id}" data-p="${esc(p.id)}">${ic("down")}Download clip</button>`
+    : h.status === "error" ? `<div class="err" style="margin:0">${esc(h.error)}</div>`
+    : `<p class="sub">Keeping this part of the stream… it is ready a minute after the moment.</p>`;
+  return `<div class="pt"><div class="pt-head"><b>${fmt(p.t)}</b>${p.score ? `<span class="badge ${scoreCls(p.score)}" style="position:static">${p.score}</span>` : ""}
+      <span class="pill">${esc(FROM[p.from] || "AI")}</span><span class="grow"></span>
+      <button class="btn sm icon ghost" data-act="ptdel" data-j="${j.id}" data-p="${esc(p.id)}" aria-label="Delete this moment">${ic("trash")}</button></div>
+    ${p.reason ? `<p style="margin:0">${esc(p.reason)}</p>` : ""}${p.text ? `<p class="sub q" style="margin:0">“${esc(p.text)}”</p>` : ""}
+    ${kept}${cuts.map(c => cutHtml(j, c)).join("")}</div>`;
+}
+function drawTranscriber() {
+  const st = $("#ltstart"); if (!st) return;
+  const busy = document.activeElement && document.activeElement.closest?.("#ltlive, #ltdone") && document.activeElement.matches("input");
+  ltKeep();
+  const live = ltJobs().find(j => j.status === "live"), done = ltJobs().filter(j => j.status !== "live");
+  if (!S.ltCreator) S.ltCreator = live?.creator || S.creators[0]?.id || "";
+  if (live) S.ltCreator = live.creator;
+  put(st, live ? `<div class="lt-start"><span class="pill live"><span class="dot"></span>Live</span><b>${esc(live.title || live.source.name)}</b>
+        <span class="sub">${esc(live.stage)} · ${fmt(live.live?.elapsed || 0)} recorded</span><span class="grow"></span>
+        <button class="btn danger" data-act="stoplive" data-j="${live.id}">${ic("stop")}Stop</button></div>`
+    : `<form class="lt-start" id="ltform">${picker("lt_creator", "Creator", [{v:"", label:"New creator from the link", icon:"plus"}, ...S.creators.map(x => ({v:x.id, label:x.name}))], S.ltCreator)}
+        <div class="composer-input">${ic("link")}<input id="lt_url" placeholder="Stream link (empty: use the creator's channel)" autocomplete="off" aria-label="Stream link"></div>
+        <button class="btn primary" id="lt_go"><span class="rdot"></span>Start</button></form>`);
+  $("#ltlive").hidden = !live;
+  if (live && !busy) put($("#ltpoints"), (live.points || []).length ? [...live.points].reverse().map(p => ptHtml(live, p)).join("")
+    : `<p class="sub">Moments appear here as they happen. You can also press Mark on any line of the transcript.</p>`);
+  if (!busy) put($("#ltdone"), done.length ? `<h3 class="lt-h">Finished recordings</h3>` + done.map(j => `<div class="pt" style="gap:12px">
+      <div class="pt-head"><b>${esc(j.title || j.source.name)}</b><span class="sub">${when(j.created)} · ${(j.points || []).length} moments</span><span class="grow"></span>
+        <button class="btn sm icon ghost" data-act="deljob" data-j="${j.id}" aria-label="Delete this recording">${ic("trash")}</button></div>
+      ${[...(j.points || [])].reverse().map(p => ptHtml(j, p)).join("")}</div>`).join("")
+    : live ? "" : `<div class="empty"><img src="/brand/favicon.svg" alt=""><b>Nothing recorded yet</b>Choose a creator, paste their stream link if you like, and press Start.</div>`);
+  for (const j of ltJobs()) for (const c of j.cuts || []) if (c.status === "ready" && S.ltAuto?.has(c.id)) {
+    S.ltAuto.delete(c.id);
+    const a = document.createElement("a"); a.href = `/media/${j.id}/${c.file}?download=1`; a.download = ""; document.body.append(a); a.click(); a.remove();
+  }
+}
+async function ltPoll() {
+  const j = ltJobs().find(x => x.status === "live"), box = $("#ltlines");
+  if (!box || !j) return;
+  if (S.ltJ !== j.id) { S.ltJ = j.id; S.ltAfter = -1; box.innerHTML = ""; }
+  const r = await api(`/api/live/${j.id}/transcript?after=${S.ltAfter}`);
+  if (!r.lines.length) return;
+  const follow = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
+  box.insertAdjacentHTML("beforeend", r.lines.map(l => `<div class="ln"><time>${fmt(l.s)}</time><span>${esc(l.text)}</span>
+    <button class="btn sm ghost" data-act="ltmark" data-j="${j.id}" data-t="${l.s}">Mark</button></div>`).join(""));
+  S.ltAfter = r.lines[r.lines.length - 1].e;
+  if (follow) box.scrollTop = box.scrollHeight;
+}
+setInterval(() => { if (S.view === "transcriber" && !document.hidden) ltPoll().catch(() => {}); }, 4000);
+async function ltStart() {
+  let cid = $("#lt_creator").value; const url = $("#lt_url").value.trim();
+  if (!cid) {
+    if (!url) return toast("Paste the stream link, or choose a creator.", "bad");
+    const name = (url.match(/(?:twitch\.tv|kick\.com|youtube\.com)\/@?([\w.-]+)/i) || [])[1] || "New creator";
+    cid = (await send("/api/creators", {name, channel: url})).id;
+  }
+  const j = await send("/api/transcriber/start", {creator: cid, url});
+  S.ltCreator = cid; if (!jobOf(j.id)) S.jobs.unshift(j);
+  toast("Recording started. The transcript appears in a few seconds.", "ok"); render(); tick();
+}
+function openCutEdit(jid, cutId) { toast("Editing arrives in the next step.", "bad"); }   // replaced in Task 10
+
 /* ============================================================ render + polling */
 function render() {
   drawShell(); drawJobs(); drawStream(); drawSelBar();
   if (S.view === "overview") drawOverview();
+  if (S.view === "transcriber") drawTranscriber();
   if ($("#clog")) drawLog();
   if (D.jid) drawClipDlg(false);
 }
@@ -2206,13 +2327,15 @@ function loop() {
 }
 
 /* ============================================================ actions */
-document.addEventListener("submit", e => { if (e.target.id === "addform") { e.preventDefault(); makeClips(); } });
+document.addEventListener("submit", e => { if (e.target.id === "addform") { e.preventDefault(); makeClips(); }
+  if (e.target.id === "ltform") { e.preventDefault(); ltStart().catch(x => toast(x.message, "bad")); } });
 $("#file").addEventListener("change", e => { attach(e.target.files); e.target.value = ""; });
 document.addEventListener("dragover", e => { const a = $(".composer"); if (a) { e.preventDefault(); a.classList.add("over"); } });
 document.addEventListener("dragleave", () => $(".composer")?.classList.remove("over"));
 document.addEventListener("drop", e => { const a = $(".composer"); if (a) { e.preventDefault(); a.classList.remove("over"); attach(e.dataTransfer.files); } });
 document.addEventListener("change", async e => {
   const t = e.target;
+  if (t.id === "lt_creator") { S.ltCreator = t.value; return; }
   if (t.id === "ai_provider") { $("#ai_models").innerHTML = ""; if (S.ai && t.value !== S.ai.provider) { $("#ai_model").value = ""; $("#ai_base").value = ""; } return aiHints(); }
   if (t.dataset.sel) {
     const k = t.dataset.sel;
@@ -2387,6 +2510,18 @@ document.addEventListener("click", async e => {
       api(`/api/live/${d.j}/stop`, {method:"POST"}).catch(e => toast(e.message, "bad")).finally(tick); return;
     }
     if (a === "clipnow") { await send(`/api/live/${d.j}/clip`, {seconds:Number(d.s)}); return toast(`Clipping the last ${d.s} seconds…`, "ok"); }
+    if (a === "ltmark") { await send(`/api/live/${d.j}/points`, {t:Number(d.t)}); toast("Added to the moments.", "ok"); return tick(); }
+    if (a === "ptcut") {
+      const lead = Number($("#lead_" + d.p)?.value ?? 20), length = Number($("#len_" + d.p)?.value ?? 60);
+      const cut = await send(`/api/live/${d.j}/points/${d.p}/cuts`, {lead, length});
+      (S.ltAuto = S.ltAuto || new Set()).add(cut.id);
+      toast(cut.note || "Making your clip… it downloads by itself when it is ready.", "ok"); return tick();
+    }
+    if (a === "ptdel") { if (!await ask("Delete this moment?", "Its saved stream and the clips cut from it are deleted too.", "Delete", true)) return;
+      await api(`/api/live/${d.j}/points/${d.p}`, {method:"DELETE"}); return tick(); }
+    if (a === "cutdel") { if (!await ask("Delete this clip?", "The file is deleted. The moment stays, so you can cut it again.", "Delete", true)) return;
+      await api(`/api/live/${d.j}/cuts/${d.c}`, {method:"DELETE"}); return tick(); }
+    if (a === "cutedit") return openCutEdit(d.j, d.c);
     if (a === "resendverify") {
       b.disabled = true;
       try { const r = await send("/api/auth/resend-verification"); if (r.verified) { S.status = await api("/api/status"); drawShell(); return toast("Your email is already confirmed.", "ok"); }
