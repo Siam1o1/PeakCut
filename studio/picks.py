@@ -121,3 +121,86 @@ def save_hold(s, p):
     h.update({"status": "ready", "file": f"points/{p['id']}.mp4", "from": round(offset, 2),
               "to": round(offset + dur, 2), "error": None})
     jobs.save(s.job)
+
+
+def point_of(job, pid):
+    p = next((p for p in job.get("points", []) if p["id"] == pid), None)
+    if not p:
+        raise LookupError("No such moment")
+    return p
+
+
+def cut_of(job, cut_id):
+    c = next((c for c in job.get("cuts", []) if c["id"] == cut_id), None)
+    if not c:
+        raise LookupError("No such clip")
+    return c
+
+
+def make_cut(job, pid, lead, length):
+    """A clip `lead` seconds before the moment and `length` long, cut exactly from the kept stretch. Made on the live
+    render worker; the cut is listed at once as "making"."""
+    p = point_of(job, pid)
+    h = p["hold"]
+    if h["status"] in ("waiting", "saving"):
+        raise ValueError("This moment's video is still being saved. Try again in a few seconds.")
+    if h["status"] != "ready":
+        raise ValueError(h.get("error") or "This moment's video could not be kept.")
+    start, end, note = plan_cut(p["t"], h["from"], h["to"], lead, length)
+    cut = {"id": _next_id(job, "next_cut", "cut"), "point": pid, "lead": round(p["t"] - start, 2),
+           "length": round(end - start, 2), "start": start, "end": end, "note": note, "status": "making",
+           "file": None, "error": None, "made_at": time.time()}
+    job.setdefault("cuts", []).append(cut)
+    jobs.save(job)
+    jobs.submit_live(lambda: _encode_cut(job, p, cut))
+    return cut
+
+
+def _encode_cut(job, p, cut):
+    d = Path(job["dir"])
+    (d / "cuts").mkdir(exist_ok=True)
+    try:
+        media.run(["ffmpeg", "-y", "-v", "error", "-ss", f"{cut['start'] - p['hold']['from']:.2f}",
+                   "-i", str(d / p["hold"]["file"]), "-t", f"{cut['end'] - cut['start']:.2f}",
+                   "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p",
+                   "-c:a", "aac", "-b:a", "160k", "-movflags", "+faststart", str(d / "cuts" / f"{cut['id']}.mp4")])
+        cut.update(status="ready", file=f"cuts/{cut['id']}.mp4", error=None)
+    except Exception as e:  # noqa: BLE001
+        cut.update(status="error", error=safe.friendly(e, 300))
+    jobs.save(job)
+
+
+def _unlink(job, rel):
+    if rel:
+        (Path(job["dir"]) / rel).unlink(missing_ok=True)
+
+
+def delete_cut(job, cut_id):
+    c = cut_of(job, cut_id)
+    if c["status"] == "making":
+        raise ValueError("This clip is still being made. Try again in a moment.")
+    _unlink(job, c.get("file"))
+    job["cuts"].remove(c)
+    jobs.save(job)
+
+
+def delete_point(job, pid):
+    p = point_of(job, pid)
+    if p["hold"]["status"] == "saving" or any(c["point"] == pid and c["status"] == "making" for c in job.get("cuts", [])):
+        raise ValueError("This moment is still being saved. Try again in a moment.")
+    for c in [c for c in job.get("cuts", []) if c["point"] == pid]:
+        _unlink(job, c.get("file"))
+        job["cuts"].remove(c)
+    _unlink(job, p["hold"].get("file"))
+    job["points"].remove(p)
+    jobs.save(job)
+
+
+def after_restart():
+    """Cuts that were being made when PeakCut stopped: marked so the clipper can make them again."""
+    for job in jobs.all_jobs():
+        stuck = [c for c in job.get("cuts", []) if c.get("status") == "making"]
+        for c in stuck:
+            c.update(status="error", error="PeakCut was closed while this clip was being made. Make it again.")
+        if stuck:
+            jobs.save(job)

@@ -137,6 +137,34 @@ try:
 except ValueError as x:
     said = str(x)
 check("marking a moment after the recording ended is refused in plain words", said, "This recording has already ended.")
+# ---- cuts
+from studio import media
+cut = picks.make_cut(job, "pt001", 20, 45)
+check("a cut starts 20 s before the moment and is as long as asked", (cut["start"], cut["end"], cut["note"]), (55.0, 100.0, ""))
+check("...and is made", (cut["status"], cut["file"]), ("ready", "cuts/cut001.mp4"))
+meta = media.probe(Path(job["dir"]) / cut["file"])
+check("...and really is 45 seconds long", abs(meta["duration"] - 45) < 0.5, True)
+c2 = picks.make_cut(job, "pt001", 20, 120)
+check("asking for more than was kept: shortened, and said", (c2["end"] == h["to"], "kept after" in c2["note"]), (True, True))
+try:
+    picks.make_cut(job, late["id"], 20, 30); said = ""
+except ValueError as x:
+    said = str(x)
+check("a moment whose stream was lost cannot be cut, and says why", said, "That part of the stream is no longer in the buffer.")
+try:
+    picks.make_cut(job, "pt999", 20, 30); said = ""
+except LookupError:
+    said = "missing"
+check("an unknown moment is refused", said, "missing")
+picks.delete_cut(job, c2["id"])
+check("deleting a cut removes it and its file", (any(c["id"] == c2["id"] for c in job["cuts"]), (Path(job["dir"]) / c2["file"]).exists()), (False, False))
+hold_file = Path(job["dir"]) / p["hold"]["file"]
+picks.delete_point(job, "pt001")
+check("deleting a moment removes its kept stream and its cuts", (hold_file.exists(), any(c["point"] == "pt001" for c in job["cuts"])), (False, False))
+job["cuts"].append({"id": "cut050", "point": m["id"], "status": "making", "file": None, "error": None})
+jobs.save(job)
+picks.after_restart()
+check("a cut interrupted by a restart says to make it again", job["cuts"][-1]["status"], "error")
 # (later tasks add more sections here, above this line)
 print("ALL PASSED" if not fails else f"{len(fails)} failed")
 sys.exit(1 if fails else 0)

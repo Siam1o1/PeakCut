@@ -805,6 +805,7 @@ def _resume_recordings(paused):
 
 
 def start():
+    picks.after_restart()
     paused = []
     for j in jobs.all_jobs():
         if j.get("recover"):
