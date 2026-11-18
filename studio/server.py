@@ -21,7 +21,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Redirect
 
 from . import admin as admins
 from . import account, load
-from . import (accounts, ai, alerts, auth, config, creators, ctx, db, jobs, live, media, posting,
+from . import (accounts, ai, alerts, auth, brain, config, creators, ctx, db, jobs, live, media, picks, posting,
                profiles, render, safe, transcribe, usage)
 
 from . import tools as _tools  # noqa: E402
@@ -1029,6 +1029,17 @@ def media_file(jid: str, name: str, download: int = 0):
     return FileResponse(f, filename=name if download else None, headers={"Cache-Control": "private, max-age=300"})
 
 
+@app.get("/media/{jid}/{folder}/{name}")
+def media_sub(jid: str, folder: str, name: str, download: int = 0):
+    """Live Transcriber files: the kept stretch around each moment, and the clips cut from them."""
+    if folder not in ("points", "cuts") or not re.fullmatch(r"[\w\-]+\.mp4", name):
+        raise HTTPException(404)
+    f = Path(_job_or_404(jid)["dir"]) / folder / name
+    if not f.is_file():
+        raise HTTPException(404)
+    return FileResponse(f, filename=name if download else None, headers={"Cache-Control": "private, max-age=300"})
+
+
 # ================================================================ creators and live recording
 def _channel_ok(body: dict):
     links = [str(body.get("channel") or "").strip()]
@@ -1238,6 +1249,130 @@ def clip_now(jid: str, body: dict = Body(...)):
     except (ValueError, TypeError) as e:
         raise HTTPException(400, str(e))
     return {"ok": True}
+
+
+# ---------------------------------------------------------------- Live Transcriber
+def _pick_job(jid: str):
+    job = _job_or_404(jid)
+    if job.get("mode") != "pick":
+        raise HTTPException(404, "No such recording")
+    return job
+
+
+def _picks_call(fn, *a):
+    try:
+        return fn(*a)
+    except LookupError as e:
+        raise HTTPException(404, str(e))
+    except (ValueError, TypeError) as e:
+        raise HTTPException(400, str(e) or "Those numbers aren't valid.")
+
+
+@app.post("/api/transcriber/start")
+def transcriber_start(body: dict = Body(...)):
+    _need_verified()
+    _quota()
+    try:
+        c = creators.get(str(body.get("creator") or ""))
+    except ValueError:
+        c = None
+    if not c:
+        raise HTTPException(404, "Choose a creator first.")
+    url = str(body.get("url") or "").strip()[:500] or None
+    try:
+        return jobs.public(live.start_session(c, url, mode="pick"))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.get("/api/live/{jid}/transcript")
+def transcript_lines(jid: str, after: float = -1.0):
+    job = _pick_job(jid)
+    s = live.mine(jid)
+    words = picks._words_of(job)
+    lines = brain.make_lines([w for w in words if w["s"] > after])
+    return {"lines": [{"s": round(l["s"], 2), "e": round(l["e"], 2), "text": l["text"]} for l in lines][-400:],
+            "live": bool(s and not s.ended)}
+
+
+@app.post("/api/live/{jid}/points")
+def mark_point(jid: str, body: dict = Body(...)):
+    _pick_job(jid)
+    s = live.mine(jid)
+    if not s or s.ended:
+        raise HTTPException(404, "This recording has already ended")
+    _throttle("mark:" + ctx.uid(), 30, 60, "That's a lot of marks at once. Wait a moment.")
+    try:
+        t = float(body.get("t"))
+    except (TypeError, ValueError):
+        raise HTTPException(400, "That time isn't valid.")
+    if not (0 <= t <= s.t_done):
+        raise HTTPException(400, "That moment hasn't been transcribed yet.")
+    try:
+        p = s.mark(t)
+    except ValueError as e:
+        raise HTTPException(404, str(e))
+    if not p:
+        raise HTTPException(409, "That moment is already in the list.")
+    return p
+
+
+@app.delete("/api/live/{jid}/points/{pid}")
+def delete_point(jid: str, pid: str):
+    _picks_call(picks.delete_point, _pick_job(jid), pid)
+    return {"ok": True}
+
+
+@app.post("/api/live/{jid}/points/{pid}/cuts")
+def new_cut(jid: str, pid: str, body: dict = Body(...)):
+    job = _pick_job(jid)
+    _throttle("cut:" + ctx.uid(), 30, 600, "That's a lot of clips in a short time. Wait a few minutes.")
+    return _picks_call(picks.make_cut, job, pid, body.get("lead", picks.LEAD_DEFAULT), body.get("length", 60))
+
+
+@app.delete("/api/live/{jid}/cuts/{cut}")
+def delete_cut(jid: str, cut: str):
+    _picks_call(picks.delete_cut, _pick_job(jid), cut)
+    return {"ok": True}
+
+
+@app.post("/api/live/{jid}/cuts/{cut}/edit")
+def edit_cut(jid: str, cut: str, body: dict = Body(default={})):
+    _need_verified()
+    _quota()
+    _job_slots()
+    job = _pick_job(jid)
+    _throttle("cutedit:" + ctx.uid(), 20, 600, "That's a lot of edits in a short time. Wait a few minutes.")
+    return jobs.public(_picks_call(picks.edit_cut, job, cut, body if isinstance(body, dict) else {}))
+
+
+@app.get("/api/live/{jid}/cuts/{cut}/frame")
+def cut_frame(jid: str, cut: str):
+    job = _pick_job(jid)
+    c = _picks_call(picks.cut_of, job, cut)
+    if c["status"] != "ready":
+        raise HTTPException(409, "This clip is still being made.")
+    try:
+        img = media.frame(Path(job["dir"]) / c["file"], min(2.0, (c["end"] - c["start"]) / 2))
+    except RuntimeError as e:
+        raise HTTPException(422, str(e))
+    return Response(img, media_type="image/jpeg", headers={"Cache-Control": "private, max-age=300"})
+
+
+@app.get("/api/jobs/{jid}/clips/{cid}/frame")
+def clip_frame(jid: str, cid: str):
+    job = _job_or_404(jid)
+    clip = next((c for c in job["clips"] if c["id"] == cid), None)
+    if not clip:
+        raise HTTPException(404, "No such clip")
+    src = Path(clip["src"]) if clip.get("src") else Path(job.get("source_path") or "")
+    if not src.is_file():
+        raise HTTPException(404, "The video this clip was cut from is no longer kept.")
+    try:
+        img = media.frame(src, clip["start"] - clip.get("src_offset", 0.0) + 1)
+    except RuntimeError as e:
+        raise HTTPException(422, str(e))
+    return Response(img, media_type="image/jpeg", headers={"Cache-Control": "private, max-age=300"})
 
 
 # ================================================================ AI usage

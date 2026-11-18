@@ -325,3 +325,13 @@ def loudness_per_second(audio: np.ndarray) -> np.ndarray:
     x = audio[: n * 16000].reshape(n, 16000).astype(np.float32) / 32768.0
     rms = np.sqrt((x ** 2).mean(axis=1) + 1e-10)
     return (20 * np.log10(rms)).astype(np.float32)
+
+
+def frame(src: Path, at: float) -> bytes:
+    """One picture from a video, as JPEG, for drawing the facecam box on."""
+    p = subprocess.run(["ffmpeg", "-v", "error", "-ss", f"{max(0.0, at):.2f}", "-i", str(src), "-frames:v", "1",
+                        "-q:v", "3", "-f", "image2", "-c:v", "mjpeg", "pipe:1"],
+                       capture_output=True, creationflags=NO_WINDOW, timeout=60)
+    if p.returncode != 0 or not p.stdout:
+        raise RuntimeError("Couldn't take a picture from this video.")
+    return p.stdout
