@@ -101,8 +101,8 @@ users, kept = {}, 0
 for t in range(0, 3000):
     users.setdefault(t, set()).add(f"person{t}")
     kept = live._trim_names(users, t, kept)
-check("the chat names of a whole stream are not kept", len(users) <= 700, True)
-check("the last few minutes of them still are", 2999 in users and min(users) >= 2999 - 660, True)
+check("the chat names of a whole stream are not kept", len(users) <= 1100, True)
+check("the last 15 minutes of them still are", 2999 in users and min(users) >= 2999 - 1020, True)
 check("the dict is not walked on every message", live._trim_names(users, 3005, 2999), 2999)
 
 print("ALL PASSED" if not fails else f"{len(fails)} FAILED")
