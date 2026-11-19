@@ -224,6 +224,13 @@ def smtp_password() -> str:
 
 
 # ---------------------------------------------------------------- Google (sign in with Google, and connecting YouTube)
+def twitch_app():
+    """(client id, client secret) of a Twitch app, used only to read viewers' clips; None when not set up."""
+    cid = _secret("TWITCH_CLIENT_ID", "TWITCH_CLIENT_ID_FILE", r"\S{6,}")
+    sec = _secret("TWITCH_CLIENT_SECRET", "TWITCH_CLIENT_SECRET_FILE", r"\S{6,}")
+    return (cid, sec) if cid and sec else None
+
+
 def google_client() -> tuple:
     """(client id, client secret). Either GOOGLE_CLIENT_ID/SECRET, or GOOGLE_CLIENT_FILE = the JSON Google lets you download."""
     return _keep("google", _read_google_client)

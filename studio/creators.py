@@ -16,7 +16,7 @@ _lock = threading.RLock()
 
 DEFAULTS = {"name": "", "channel": "", "style": "bounce", "layout": "blur", "res": 1080, "captions": True, "min_len": 15, "max_len": 60,
             "max_clips": 6, "min_score": 80, "auto_watch": False, "buffer_min": 20, "live_per_hour": 4, "ai_every_min": 3, "ai_only_on_spike": True, "auto_jump_pct": 60, "sig_baseline": True, "jump_z": 3.5,
-            "sig_chat_words": True, "chat_window": 8, "words_laugh": "", "words_shock": "", "words_hype": "", "words_clip": "", "words_negative": "",
+            "sig_chat_words": True, "sig_viewer_clips": True, "chat_window": 8, "words_laugh": "", "words_shock": "", "words_hype": "", "words_clip": "", "words_negative": "",
             "plan": "free", "decide_mode": "both", "must_clip_min": 0, "min_gap_min": 2,
             "game": "",
             "trigger_words": "clip that, clip it",
@@ -77,7 +77,7 @@ def _clean(data: dict) -> dict:
             v = max(2.0, min(8.0, f))
         elif k == "res":
             v = int(v) if str(v) in ("720", "1080") else 1080
-        elif k in ("auto_watch", "autopost", "ai_only_on_spike", "sig_baseline", "sig_chat_words"):
+        elif k in ("auto_watch", "autopost", "ai_only_on_spike", "sig_baseline", "sig_chat_words", "sig_viewer_clips"):
             v = bool(v)
         elif k == "channels":
             v = {p: str(u).strip()[:300] for p, u in (v.items() if isinstance(v, dict) else []) if p in PLATFORMS and str(u).strip()}

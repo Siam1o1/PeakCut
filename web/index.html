@@ -1915,6 +1915,7 @@ function drawCreatorForm() {
       <div class="fields"><label class="sw span"><input type="checkbox" data-k="sig_baseline" ${c.sig_baseline === false ? "" : "checked"}><span>Use the new baseline<small>Compare loudness and chatters with the last 15 minutes of this stream, and keep only the strongest moments each hour</small></span></label>
         <label class="f">How unusual a jump must be<input data-k="jump_z" type="number" step="0.5" min="2" max="8" value="${c.jump_z ?? 3.5}"></label>
         <label class="sw span"><input type="checkbox" data-k="sig_chat_words" ${c.sig_chat_words === false ? "" : "checked"}><span>Read what chat says<small>A crowd sending the same word or emote, or several people asking for a clip, counts as a jump. Bots, copied messages and raids are ignored.</small></span></label>
+        <label class="sw span"><input type="checkbox" data-k="sig_viewer_clips" ${c.sig_viewer_clips === false ? "" : "checked"}><span>Use viewers' Twitch clips<small>Needs TWITCH_CLIENT_ID and TWITCH_CLIENT_SECRET in .env</small></span></label>
         <label class="f">Chat window (seconds)<input data-k="chat_window" type="number" min="5" max="10" value="${c.chat_window ?? 8}"></label>
         <label class="f">Laugh words<input data-k="words_laugh" value="${esc(c.words_laugh || "")}" placeholder="${esc(DEFAULT_WORDS.laugh)}"></label>
         <label class="f">Shock words<input data-k="words_shock" value="${esc(c.words_shock || "")}" placeholder="${esc(DEFAULT_WORDS.shock)}"></label>
@@ -2237,7 +2238,7 @@ $("#clipdlg").addEventListener("close", () => { $("#clipdlg").innerHTML = ""; D.
 $("#clipdlg").addEventListener("click", e => { if (e.target === e.currentTarget) e.currentTarget.close(); });
 
 /* ============================================================ Live Transcriber */
-const FROM = {ai:"AI", jump:"Loud moment", said:'"Clip it"', trigger:"Trigger word", you:"Marked by you"};
+const FROM = {ai:"AI", jump:"Loud moment", said:'"Clip it"', trigger:"Trigger word", you:"Marked by you", viewers:"Viewers clipped it"};
 const ltJobs = () => S.jobs.filter(j => j.mode === "pick");
 function ltKeep() {          // keep what the clipper typed in the number boxes across redraws
   S.ltIn = S.ltIn || {};

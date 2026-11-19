@@ -11,7 +11,7 @@ from pathlib import Path
 
 import numpy as np
 
-from . import alerts, auth, brain, config, creators, ctx, facecam, games, jobs, load, media, picks, profiles, signals, transcribe, usage
+from . import alerts, auth, brain, config, creators, ctx, facecam, games, jobs, load, media, picks, profiles, signals, transcribe, twitch, usage
 
 # ":username!user@host PRIVMSG #channel :the message"
 
@@ -161,6 +161,12 @@ class Session:
         self.spikes = 0
         self.viewer_log = []          # (second, viewers) each time the count was read, so each second is scaled by its own
         self.viewers = None           # how many people are watching, when the platform says (checked about once a minute)
+        self.clock0 = None            # unix time the first audio arrived: viewers' clip times are counted from it
+        self.viewer_clips = {}        # clip id -> its times, for the Twitch clips already seen
+        self.viewer_used = set()      # clips already part of a burst that was reported
+        self._helix = None
+        self._helix_user = None
+        self._helix_told = False
         self.top = signals.HourlyTop(settings.get("live_per_hour", 4))   # keeps the strongest moments of each hour
         self.zs = {"loud": 0.0, "chat": 0.0}   # how unusual loudness and chat are now, against the last 15 minutes
         self.game = ""                # which game this stream is, when it can be told
@@ -231,6 +237,8 @@ class Session:
         m = re.match(r"^https?://(?:www\.)?twitch\.tv/([A-Za-z0-9_]+)", self.job["source"]["url"])
         if m:
             threading.Thread(target=ctx.bind(self._chat), args=(m.group(1).lower(),), daemon=True).start()
+            if self.settings.get("sig_viewer_clips", True):
+                threading.Thread(target=ctx.bind(self._watch_viewer_clips), daemon=True, name="viewer_clips").start()
 
     def _baseline(self):
         """True when moments are found against the last 15 minutes of this stream, not by the old fixed rules."""
@@ -251,6 +259,61 @@ class Session:
             except Exception:  # noqa: BLE001
                 pass
             self.stop_flag.wait(60)
+
+    def _watch_viewer_clips(self):
+        """Every 90 seconds, look at the clips viewers made of this channel. Does nothing without Twitch credentials."""
+        if not config.twitch_app():
+            self._viewer_trouble("Viewers' clips skipped: no Twitch credentials in .env")
+            return
+        while not self.stop_flag.is_set() and not self.ended:
+            try:
+                self._poll_viewer_clips()
+            except Exception:  # noqa: BLE001
+                pass
+            self.stop_flag.wait(90)
+
+    def _viewer_trouble(self, msg):
+        if not self._helix_told:               # said once, then quiet
+            self._helix_told = True
+            creators.log(self.job["creator"], msg)
+
+    def _poll_viewer_clips(self):
+        """One look at the viewers' clips. A burst of clips from different people is a strong moment.
+        True when it asked Twitch."""
+        if not self.clock0:
+            return False
+        if not self._helix:
+            app = config.twitch_app()
+            if not app:
+                return False
+            self._helix = twitch.Helix(*app)
+        m = re.match(r"^https?://(?:www\.)?twitch\.tv/([A-Za-z0-9_]+)", self.job["source"]["url"])
+        if not m:
+            return False
+        if not self._helix_user:
+            self._helix_user = self._helix.user_id(m.group(1).lower())
+            if not self._helix_user:
+                self._viewer_trouble("Viewers' clips skipped: Twitch would not answer (check the credentials in .env)")
+                return True
+        got = self._helix.clips(self._helix_user, self.clock0 - 60)
+        for t in twitch.clip_times(got, self.clock0):
+            if t["end"] > 0:
+                self.viewer_clips[t["id"]] = t
+        for b in twitch.bursts(list(self.viewer_clips.values())):
+            if self.viewer_used & set(b["ids"]):
+                continue
+            self.viewer_used |= set(b["ids"])
+            self._viewer_burst(b)
+        return True
+
+    def _viewer_burst(self, b):
+        why = f"Viewers clipped this ({b['people']} people)"
+        if self.pick:      # like a mark made by hand: always listed
+            picks.add_point(self, {"start": max(0.0, b["t"] - 30), "end": b["t"] + 10, "peak": b["t"], "score": 0,
+                                   "reason": why, "from": "viewers"})
+        else:              # sent to the AI like a jump, and strong enough to rank high
+            self.spike = {"t": float(b["t"]), "why": why, "z": 10, "viewer_clips": b["people"]}
+            self.spikes += 1
 
     def stop(self, note="Stopped by you"):
         """Instant for the user: the card and the creator show as stopped straight away. Clips already being made
@@ -315,6 +378,8 @@ class Session:
                     got += len(data)
                     x = np.frombuffer(data, dtype=np.int16).astype(np.float32) / 32768.0
                     level = float(20 * np.log10(np.sqrt((x ** 2).mean() + 1e-10))) if len(x) else -100.0
+                    if not self.clock0:
+                        self.clock0 = time.time()
                     with self.lock:
                         self.pending += data
                         self.samples += len(data) // 2
@@ -690,7 +755,7 @@ class Session:
                                                      st["decide_mode"] == "either" else "Forced: no clip for a while")
             c["judges"] = {"words": c["score"], "reaction": rs or None, "why": why}
             c["reason"] = f"{c['reason']} ({why.lower()}.)"
-            c["from"] = "jump" if (trigger or "").startswith("Jump") else "said" if trigger else "ai"
+            c["from"] = "viewers" if "Viewers clipped" in (trigger or "") else "jump" if (trigger or "").startswith("Jump") else "said" if trigger else "ai"
             if self._add_clip(c) is None:       # pick mode: this moment is already in the list
                 self._verdict(verdict, "Already in the list")
                 continue
