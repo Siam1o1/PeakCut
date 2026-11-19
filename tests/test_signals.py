@@ -395,4 +395,16 @@ check("a viewer burst waits for settled edges", (len(vp.job["points"]), len(vp.v
 vp.ended = True; vp._flush_viewer_points()
 check("and is listed anyway once the stream ended", len(vp.job["points"]), 1)
 
+# ---- nothing waiting is lost on Stop, and a merged viewer point is marked
+vs = session(min_len=10, max_len=40); vs.pick = True; vs.words = tw; vs.chat_on = True; vs.lag = 5
+vs.conv_hist = [(60, .1), (68, .1), (76, .1), (84, .1), (92, .1), (100, .1), (108, .9), (116, .9)]
+vs.t_done = 130; vs.job["points"] = []
+vs._viewer_burst({"t": 101, "people": 3})
+vs.user_stopped = True; vs._flush_viewer_points()
+check("Stop lists a waiting viewer point", (len(vs.job["points"]), vs.viewer_points), (1, []))
+vm = session(min_len=10, max_len=40); vm.pick = True; vm.words = tw; vm.ended = True
+vm.job["points"] = [{"id": "pt1", "t": 98.0, "from": "jump", "start": 80, "end": 120}]
+vm._viewer_burst({"t": 101, "people": 4})
+check("a viewer point merged into an existing one marks it", (len(vm.job["points"]), vm.job["points"][0]["viewers"], vm.job["points"][0]["from"]), (1, 4, "jump"))
+
 print("ALL PASSED" if not fails else f"{len(fails)} failed"); sys.exit(1 if fails else 0)

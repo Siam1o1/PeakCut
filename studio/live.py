@@ -332,13 +332,21 @@ class Session:
                     self.spikes += 1
 
     def _flush_viewer_points(self):
-        """List the viewer bursts whose clip edges are settled (or all of them once the stream has ended)."""
+        """List the viewer bursts whose clip edges are settled, or all of them once the stream has ended or Stop was
+        pressed (with the best edges known by then), so that nothing waiting is lost."""
         for b in list(self.viewer_points):
             ready, start, end = self._settled(b["t"])
-            if ready or self.ended:
+            if ready or self.ended or self.user_stopped:
                 self.viewer_points.remove(b)
-                picks.add_point(self, {"start": start, "end": end, "peak": b["t"], "score": 0,
-                                       "reason": f"Viewers clipped this ({b['people']} people)", "from": "viewers"})
+                p = picks.add_point(self, {"start": start, "end": end, "peak": b["t"], "score": 0,
+                                           "reason": f"Viewers clipped this ({b['people']} people)", "from": "viewers"})
+                if p is None:      # the same moment was listed already (by the AI or a jump): note the viewers on it
+                    with self.lock:
+                        for q in self.job["points"]:
+                            if abs(q["t"] - b["t"]) < 10:
+                                q["viewers"] = max(int(q.get("viewers") or 0), int(b["people"]))
+                                break
+                    ctx.bump()
 
     def _viewer_burst(self, b):
         why = f"Viewers clipped this ({b['people']} people)"
@@ -1067,6 +1075,9 @@ class Session:
                 elif said and (self.t_done >= said["t"] + self.SAID_AFTER or (self.ended and not busy)):
                     self.said = None
                     self._ask_ai((said["t"] - self.SAID_BEFORE, said["t"] + self.SAID_AFTER), said["why"])
+                # A jump waits until its end is known: the transcript has reached it and chat has calmed down. When
+                # chat never calms, it waits at most until t + max_len + 5. Jumps found meanwhile are skipped by
+                # the usual gap between jumps (AUTO_GAP), so a waiting one is never replaced.
                 elif sp and (self._settled(sp["t"])[0] or (self.ended and not busy)):
                     self.spike = None
                     if self._timing():
@@ -1084,7 +1095,7 @@ class Session:
             # well as at the end of a stream, so both wait for it. Stopping is still instant on the page:
             # stop() has already written the status. In the Live Transcriber, a moment whose stretch of
             # stream is not saved yet holds the session open the same way, so pressing Stop never loses it.
-            holds = self.pick and bool(picks.waiting(self))
+            holds = self.pick and (bool(picks.waiting(self)) or bool(self.viewer_points))
             if ((self.user_stopped and not self.manual and not self.ai_busy and not holds)
                     or (self.ended and not busy and not self.ai_busy and not holds
                         and len(self.pending) < SR * 2 and not self.manual)):
