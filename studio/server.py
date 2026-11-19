@@ -431,7 +431,7 @@ def asset(name: str):
 
 @app.get("/favicon.ico")
 def favicon():
-    return RedirectResponse("/brand/favicon.svg", 308)
+    return RedirectResponse("/brand/favicon.svg?v=pc2", 308)
 
 
 # ================================================================ sign up, sign in, sign out
@@ -1292,6 +1292,25 @@ def clip_now(jid: str, body: dict = Body(...)):
     except (ValueError, TypeError) as e:
         raise HTTPException(400, str(e))
     return {"ok": True}
+
+
+@app.post("/api/live/{jid}/decisions/{vid}")
+def answer_decision(jid: str, vid: int, body: dict = Body(...)):
+    """The clipper disagrees with an AI decision and clips that stretch anyway ({"clip": true}), or dismisses it."""
+    s = live.mine(jid)
+    if not s or s.ended:
+        raise HTTPException(404, "This recording has already ended")
+    clip = body.get("clip") is True
+    if clip:
+        _throttle("clipnow:" + ctx.uid(), 6, 60, "Give it a moment: your last clips are still being made.")
+        if len(s.manual) >= 3:
+            raise HTTPException(429, "Give it a moment: your last clips are still being made.")
+    try:
+        return s.decide(vid, clip)
+    except KeyError:
+        raise HTTPException(404, "That decision is no longer on the card.")
+    except ValueError as e:
+        raise HTTPException(409, str(e))
 
 
 # ---------------------------------------------------------------- Live Transcriber

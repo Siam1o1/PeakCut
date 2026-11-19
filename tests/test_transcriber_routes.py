@@ -89,5 +89,20 @@ check("deleting a cut", (c.delete(f"/api/live/{J}/cuts/{cid}", headers=H).status
 check("deleting a moment", c.delete(f"/api/live/{J}/points/pt001", headers=H).status_code, 200)
 check("pick-mode recordings carry their moments to the page", "points" in c.get(f"/api/jobs/{J}").json(), True)
 
+# answering an AI decision on the live card: clip it anyway, or dismiss it
+with s.lock:
+    s.verdicts.append({"id": 41, "t": 80, "result": "Words judge: nothing clip-worthy", "summary": "s", "why": "w",
+                       "start": 40.0, "end": 70.0, "peak": None})
+    s.verdicts.append({"id": 42, "t": 85, "result": "Skipped: nobody talking"})
+d = c.post(f"/api/live/{J}/decisions/41", json={"clip": True}, headers=H)
+check("clipping a stretch the AI said no to", (d.status_code, d.json().get("state"), s.manual[-1]["start"]), (200, "clipped", 40.0))
+check("answering the same decision again", c.post(f"/api/live/{J}/decisions/41", json={"clip": False}, headers=H).status_code, 409)
+check("a decision with nothing to clip", c.post(f"/api/live/{J}/decisions/42", json={"clip": True}, headers=H).status_code, 404)
+check("a decision that is not on the card", c.post(f"/api/live/{J}/decisions/7", json={"clip": False}, headers=H).status_code, 404)
+check("someone else's recording's decisions cannot be answered",
+      c.post(f"/api/live/{O}/decisions/41", json={"clip": True}, headers=H).status_code, 404)
+check("another website cannot answer decisions", c.post(f"/api/live/{J}/decisions/41", json={"clip": True},
+      headers={"Origin": "https://evil.example", "Sec-Fetch-Site": "cross-site"}).status_code, 403)
+
 print("ALL PASSED" if not fails else f"{len(fails)} failed")
 sys.exit(1 if fails else 0)

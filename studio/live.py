@@ -161,6 +161,7 @@ class Session:
         self.checks = 0
         self.rejected = 0
         self.verdicts = []
+        self.vn = 0                   # numbers the AI's decisions, so the clipper can clip or dismiss one
         self.last_trigger = -999.0
         self.started_at = time.time()
         self.skipped = 0
@@ -843,22 +844,28 @@ class Session:
             self.skipped += 1
             return self._verdict(verdict, "Skipped: nobody talking")
         strongest = self._baseline() and not must and (trigger or "").startswith("Jump") and score is not None
+        if window:       # a stretch someone could still clip by hand, if the AI is never asked about it
+            self._offer(verdict, max(ws, now - float(st["max_len"])), now, said=win)
         if len(recent) >= st["live_per_hour"] and not must and not self.pick:
             # clip mode: never more clips in an hour than the creator allows, however strong the moment
             self.skipped += 1
+            verdict["why"] = f"The creator allows {st['live_per_hour']} clips an hour, and that many were made already."
             return self._verdict(verdict, f"Skipped: {st['live_per_hour']} clips this hour already")
         if strongest:    # the strongest few moments of the hour are kept, whatever order they came in
             if not self.top.admit(float(score), time.time(), cand):
                 self.skipped += 1
+                verdict["why"] = "Stronger jumps were already sent to the AI this hour, so this one was not."
                 return self._verdict(verdict, "Passed over: stronger moments this hour")
             if self.top.dropped:        # the weakest one sent this hour no longer counts: the log says so
                 signals.note(self._log(), self.top.dropped, replaced=True)
         usage.set_context(self.job["creator"], self.job["title"] or "Live stream")
         title, up = self.job["title"], self.job["uploader"]
+        notes = {}
         try:
             cands, tok = brain.judge_transcript(win, ws, now, title, up, st["min_len"], st["max_len"], prev,
                                                 n=1 if every <= 2 else 2, must=must, game=self._game(),
-                                                timeout=config.LIVE_AI_TIMEOUT, profile=self._profile())  # Auto (0) asks for one
+                                                timeout=config.LIVE_AI_TIMEOUT, profile=self._profile(),
+                                                notes=notes)  # Auto (0) asks for one
         except Exception as e:  # noqa: BLE001
             self.job["ai"]["last_error"] = str(e)[-200:]
             if self.pick and window:      # no AI: a jump in loudness or chat, or "clip it", is still worth listing
@@ -879,6 +886,15 @@ class Session:
             # The marks the AI gave the best moment. The one-line reason is text, and the log keeps numbers only.
             signals.note(self._log(), cand, rating={k: v for k, v in cands[0]["rating"].items() if k != "why"})
         if not keep:
+            # Why not, in the judge's own words, and the stretch it liked best, for the clipper to clip anyway
+            best = cands[0] if cands else None
+            why = notes.get("why") or (best or {}).get("reason") or ""
+            if best:
+                why = f"Best moment scored {best['score']}, {st['min_score']} needed. {why}".strip()
+                self._offer(verdict, best["start"], best["end"], best.get("peak"))
+            elif notes.get("best"):
+                self._offer(verdict, *notes["best"])
+            verdict.update(summary=notes.get("summary") or (best or {}).get("description") or "", why=why)
             return self._verdict(verdict, "Words judge: nothing clip-worthy")
         z = brain.loud_zscore(np.array(self.db, dtype=np.float32))
         lo, hi = int(ws), int(now) + 1
@@ -903,12 +919,18 @@ class Session:
             verdict["reaction"] = rs
             both = bool(match)
             ok = both or (st["decide_mode"] == "either" and c["score"] >= 90) or (must and added == 0)
+            told = dict(verdict, summary=notes.get("summary") or c.get("description") or "")
+            self._offer(told, c["start"], c["end"], c.get("peak"))
             if not ok:
                 self.rejected += 1
-                self._verdict(verdict, "Reaction judge said no, not clipped")
+                heard = max(sig, key=lambda m: m["score"], default=None)
+                told["why"] = (f"Words judge gave it {c['score']}, but the loudness and chat showed no big reaction"
+                               + (f" (best {heard['score']}: {brain._text(heard['reason'], 100)})" if heard else "") + ".")
+                self._verdict(told, "Reaction judge said no, not clipped")
                 continue
             if any(abs(c["start"] - k["start"]) < st["min_gap_min"] * 60 for k in prev):
-                self._verdict(verdict, "Too close to the last clip")
+                told["why"] = f"Another clip starts less than {st['min_gap_min']} min away."
+                self._verdict(told, "Too close to the last clip")
                 continue
             why = "Both judges agreed" if both else ("Words judge was very sure" if c["score"] >= 90 and
                                                      st["decide_mode"] == "either" else "Forced: no clip for a while")
@@ -920,17 +942,52 @@ class Session:
             if self._add_clip(c) is None:       # pick mode: this moment is already in the list
                 self._verdict(verdict, "Already in the list")
                 continue
-            self._verdict(verdict, "Clipped: " + why.lower())
+            told["why"] = c.get("reason", "")
+            self._verdict(told, "Clipped: " + why.lower())
             added += 1
             must = False
             if added >= (1 if every <= 2 else 2):
                 break
 
+    def _offer(self, v, start, end, peak=None, said=None):
+        """Lets the clipper clip this stretch by hand if they disagree with the decision. `said`: the words heard
+        there, shown as the summary when the AI was never asked."""
+        v.update(start=round(float(start), 2), end=round(float(end), 2), peak=peak)
+        if said is not None:
+            heard = [w["w"] for w in said if start <= w["s"] <= end]
+            text = ("… " if len(heard) > 24 else "") + " ".join(heard[-24:])[:200].strip()   # the last words before the jump
+            v["summary"] = ("“" + text + "”") if heard else ""
+
+    def decide(self, vid, clip):
+        """The clipper's answer to one AI decision: clip that stretch after all, or dismiss it."""
+        with self.lock:
+            v = next((x for x in self.verdicts if x.get("id") == vid), None)
+            if not v or v.get("start") is None:
+                raise KeyError(vid)
+            if v.get("state"):
+                raise ValueError("This decision was answered already.")
+            if clip and (self.analysis_done or self.ended or self.user_stopped):
+                raise ValueError("This recording has already ended.")
+            v["state"] = "clipped" if clip else "cancelled"
+            if clip:
+                peak = v.get("peak")
+                self.manual.append({"start": v["start"], "end": v["end"], "from": "you",
+                                    "t": (peak + 5) if peak is not None else v["end"],
+                                    "why": "Clipped by you after the AI said no"})
+        jobs.save(self.job)           # the card shows the same decisions, so the answer shows at once
+        return dict(v)
+
     def _verdict(self, v, result):
         v = dict(v)
         cand = v.pop("cand", None)
-        self.verdicts.append(dict(v, result=result))
-        del self.verdicts[:-6]
+        if v.get("start") is None or result.startswith(("Clipped", "Already", "AI error")):
+            for k in ("start", "end", "peak"):     # nothing for the clipper to answer
+                v.pop(k, None)
+        with self.lock:
+            self.vn += 1
+            v.update(id=self.vn, result=result)
+            self.verdicts.append(v)
+            del self.verdicts[:-6]
         if cand:           # what happened to this candidate, for the log (short labels and numbers only)
             sent = not result.startswith(("Skipped", "Passed over"))
             signals.note(self._log(), cand, sent=sent, result=self._label(result), words=v.get("transcript"),

@@ -413,6 +413,21 @@ you will see it again in the next check.
 Pick up to {n} moments that would work as standalone clips for someone who has never seen the stream:
 funny moments, fails, clutch plays, rage, shock, hot takes, or a short story with a payoff.
 """
+LIVE_ANSWER = """
+Answer with one JSON object:
+- summary: one short line (under 120 characters), in plain English, on what happened in this stretch.
+- why: one short line (under 160 characters) on your decision. If clips is empty, say what this stretch is missing
+  (for example: just chatter, no payoff, needs context, nothing happens). If not, say why the best one works.
+- best_start, best_end: the [seconds] of the stretch you would clip if someone made you clip something here,
+  between {min_len} and {max_len} seconds long, even when it is not good enough to return.
+- clips: the moments you return, usually []. Each one follows the rules below.
+"""
+LIVE_SCHEMA = {
+    "type": "OBJECT",
+    "properties": {"summary": {"type": "STRING"}, "why": {"type": "STRING"}, "best_start": {"type": "NUMBER"},
+                   "best_end": {"type": "NUMBER"}, "clips": SCHEMA},
+    "required": ["summary", "why", "clips"],
+}
 MUST_PICK = "This time you MUST return the single best moment in this stretch, even if it is only decent."
 NOT_MUST = "Most checks should return []. Only return a moment you would stop scrolling for."
 
@@ -472,17 +487,25 @@ SIG_SCHEMA = {
 
 
 def judge_transcript(words, start, now, title="", uploader="", min_len=15, max_len=60, existing=(), n=2, must=False,
-                    game=None, timeout=None, profile=""):
+                    game=None, timeout=None, profile="", notes=None):
     """Judge 1: words only. `profile` is what earlier streams showed about this creator (already wrapped as untrusted
-    text). Returns (clips, tokens)."""
+    text). Returns (clips, tokens). A dict passed as `notes` gets the judge's one-line summary of the stretch, the
+    reason for its decision, and `best`: the (start, end) it would clip if it had to, or None."""
     lines = make_lines(words)
     if len(lines) < 3:
         return [], 0
     prompt = (TRANSCRIPT_JUDGE.format(title=_safe(title) or "unknown", uploader=_safe(uploader) or "unknown", start=start, now=now,
                                       n=n, must=MUST_PICK if must else NOT_MUST)
+              + LIVE_ANSWER.format(min_len=min_len, max_len=max_len)
               + _game_rules(game) + (profile or "")
               + RULES.format(min_len=min_len, max_len=max_len, transcript=_fmt(lines)))
-    out, _model, spent = ask_ai(prompt, purpose="Live: words judge", timeout=timeout)
+    out, _model, spent = ask_ai(prompt, LIVE_SCHEMA, purpose="Live: words judge", timeout=timeout)
+    if isinstance(out, dict):
+        if notes is not None:
+            notes.update(_notes(out, lines, words, start, now, min_len, max_len))
+        out = out.get("clips") if "clips" in out or "start" not in out else [out]
+    if not isinstance(out, list):
+        out = []
     clips = []
     for c in sorted((c for c in out if isinstance(c, dict)), key=lambda c: -_value(c)):
         s, e = _snap(c, lines, words, min_len, max_len, now)
@@ -493,6 +516,18 @@ def judge_transcript(words, start, now, title="", uploader="", min_len=15, max_l
         clips.append(t)
     clips.sort(key=lambda c: -c["score"])      # the rating can reorder what the AI scored
     return clips, spent
+
+
+def _notes(out, lines, words, start, now, min_len, max_len):
+    """The words judge's summary, its reason, and the stretch it would clip if it had to: text the AI wrote about
+    untrusted speech, so cleaned like any other AI text; the stretch is kept inside what the judge was shown."""
+    best = None
+    s, e = _num(out.get("best_start"), -1), _num(out.get("best_end"), -1)
+    if start - 1 <= s < e <= now + 1:
+        s, e = _snap({"start": s, "end": e}, lines, words, min_len, max_len, now)
+        if e - s >= min(min_len, 5) - 1:
+            best = (round(max(start, s), 2), round(min(now, e), 2))
+    return {"summary": _text(out.get("summary"), 160), "why": _text(out.get("why"), 200), "best": best}
 
 
 def judge_signals(z, chat, start, now, unit="messages", timeout=None, profile=""):
