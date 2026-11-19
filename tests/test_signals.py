@@ -1,4 +1,4 @@
-import os, sys, tempfile
+import os, sys, tempfile, time
 os.environ["PEAKCUT_DATA"] = tempfile.mkdtemp(prefix="pc-signals-"); os.environ["DATABASE_URL"] = ""
 os.environ["PEAKCUT_FETCH_MODEL"] = "0"
 sys.path.insert(0, ".")
@@ -408,13 +408,19 @@ vm._viewer_burst({"t": 101, "people": 4})
 check("a viewer point merged into an existing one marks it", (len(vm.job["points"]), vm.job["points"][0]["viewers"], vm.job["points"][0]["from"]), (1, 4, "jump"))
 
 # ---- one fused score, and the log
-check("fuse: loudness z 6 alone", signals.fuse({"loud": 6}), round(100 * 1 / 6.5))
+# noisy-OR: score = 100 * (1 - prod((1 - v) ** (w / max_w))); default max weight is 2 (viewer clips)
+check("fuse: one full signal is enough (loud z 6 -> v 1 -> 0 ** .5 = 0 -> 100)", signals.fuse({"loud": 6}), 100)
+check("fuse: loud z 3 -> v .5, w 1 of 2: .5 ** .5 = .7071 -> 29", signals.fuse({"loud": 3}), 29)
+check("fuse: loud z 3 and chat z 3 -> .7071 * .7071 = .5 -> 50 (two half signals beat one)", signals.fuse({"loud": 3, "chat": 3}), 50)
+check("fuse: two half-strength signals score more than either alone", signals.fuse({"loud": 3, "chat": 3}) > signals.fuse({"loud": 3}), True)
 check("fuse: nothing known is 0", signals.fuse({}), 0)
+check("fuse: all weights 0 is 0", signals.fuse({"loud": 6}, {k: 0 for k in signals.DEFAULT_WEIGHTS}), 0)
 check("fuse: more of everything is 100", signals.fuse({"loud": 9, "chat": 9, "convergence": 1, "reactions": 9, "clip_requests": 9, "viewer_clips": 9}), 100)
-check("fuse: weights change the result", signals.fuse({"loud": 6}, {"loud": 3}) > signals.fuse({"loud": 6}), True)
-check("fuse: a weight of 0 leaves a signal out", signals.fuse({"loud": 6, "chat": 6}, {"chat": 0}),
-      round(100 / 5.5))
-check("fuse: viewer clips count for a lot", signals.fuse({"viewer_clips": 3}) > signals.fuse({"clip_requests": 3}), True)
+check("fuse: weights change the result (loud weight 2 = the top: .5 ** 1 -> 50)", signals.fuse({"loud": 3}, {"loud": 2}), 50)
+check("fuse: a weight of 0 leaves a signal out", signals.fuse({"loud": 6, "chat": 3}, {"loud": 0}), round(100 * (1 - 0.5 ** 0.5)))
+check("fuse: a 3-viewer burst is high by itself", signals.fuse({"viewer_clips": 3}) >= 80, True)
+check("fuse: one viewer clip: v 1/3, w 2 of 2: 2/3 -> 33", signals.fuse({"viewer_clips": 1}), 33)
+check("fuse: viewer clips count for more than clip requests", signals.fuse({"viewer_clips": 1}) > signals.fuse({"clip_requests": 1}), True)
 lg = signals.Log(os.path.join(os.environ["PEAKCUT_DATA"], "x", "signals.jsonl"))
 cid = lg.add({"job": "j1", "values": {"loud": 4.2}, "score": 55, "sent": False, "kind": "loud"})
 lg.update(cid, sent=True, verdict="Clipped: both judges agreed")
@@ -447,7 +453,15 @@ check("the log is on by default", creators.DEFAULTS["sig_log"], True)
 
 # ---- the session scores, logs and carries the candidate id
 lp = os.path.join(os.environ["PEAKCUT_DATA"], "sess", "signals.jsonl")
-class FakeLog(signals.Log): pass
+import contextlib
+@contextlib.contextmanager
+def patched(obj, name, value):
+    old = getattr(obj, name)
+    setattr(obj, name, value)
+    try:
+        yield
+    finally:
+        setattr(obj, name, old)
 def logged(**st):
     x = session(**st); x.log = signals.Log(lp + str(id(x))); x._log = lambda x=x: x.log
     return x
@@ -464,13 +478,14 @@ lx._verdict({"t": 1, "cand": cand, "transcript": 88, "reaction": 70}, "Clipped: 
 r2 = lx.log.read()[cand]
 check("the judges' verdict is added", (r2["sent"], r2["words"], r2["reaction"]), (True, 88, 70))
 lx._verdict({"t": 1, "cand": cand}, "AI error: " + "e" * 80)
-check("a long error label is cut to fit", len(lx.log.read()[cand]["result"]) <= 40, True)
+check("an error is logged as a fixed label, never its text", lx.log.read()[cand]["result"], "ai error")
 chatsp = {"t": 50.0, "why": "Chat", "z": 5.0, "chat": {"people": 9, "convergence": 0.7, "top": "x" * 60, "top_kind": "hype",
-          "types": {"laugh": 0, "shock": 1, "hype": 6, "clip": 4, "negative": 0}, "clip_people": 4}}
+          "types": {"laugh": 1, "shock": 1, "hype": 2, "clip": 4, "negative": 3}, "clip_people": 4}}
 cc = lx._candidate(chatsp)
 rc = lx.log.read()[cc]
 check("chat window numbers are logged, never the word", (rc["values"]["convergence"], rc["values"]["clip_requests"], "x" * 60 in open(lx.log.path, encoding="utf-8").read()), (0.7, 4, False))
 check("the kind label is short", rc.get("kind"), "hype")
+check("reactions count laugh, shock and hype only (not negative, not clip)", rc["values"]["reactions"], 4)
 lw = logged(sig_weights={"loud": 0, "chat": 0, "convergence": 0, "reactions": 0, "clip_requests": 0, "viewer_clips": 1})
 vsp = {"t": 5.0, "why": "v", "z": 13, "viewer_clips": 3}
 wc = lw._candidate(vsp)
@@ -481,9 +496,29 @@ check("a viewer point made in pick mode carries its candidate", bool(lh.job["poi
 lm = logged(); lm.pick = True; lm.ended = True
 lm.job["points"] = [{"id": "pt1", "t": 98.0, "from": "jump", "start": 80, "end": 120}]
 saved = []
-live.jobs.save = lambda j, _s=saved: _s.append(1)
-lm._viewer_burst({"t": 101, "people": 4})
+with patched(live.jobs, "save", lambda j, _s=saved: _s.append(1)):
+    lm._viewer_burst({"t": 101, "people": 4})
 check("marking an existing point with viewers saves the job", len(saved) >= 1, True)
+check("a merged viewer burst gives its id to a point that had none", lm.job["points"][0].get("cand") in lm.log.read(), True)
+ln = logged(); ln.pick = True; ln.ended = True
+ln.job["points"] = [{"id": "pt1", "t": 98.0, "from": "jump", "start": 80, "end": 120, "cand": "other1"}]
+with patched(live.jobs, "save", lambda j: None):
+    ln._viewer_burst({"t": 101, "people": 4})
+vid = [k for k in ln.log.read() if k != "other1"][0]
+check("or logs merged_into when the point already had one", (ln.job["points"][0]["cand"], ln.log.read()[vid].get("merged_into")), ("other1", "other1"))
+# an AI check dropped because another is running is logged
+lb = logged(); bc = lb._candidate({"t": 5.0, "why": "x", "z": 5.0, "sig": {"loud": 5.0}})
+lb.ai_busy = time.time()
+lb._ask_ai((0, 10), "Jump: x", 50, cand=bc)
+check("a candidate dropped while the AI is busy is logged", lb.log.read()[bc].get("result"), "AI busy")
+# the real path: the creator's own log file, read back
+cr2 = creators.create({"name": "RealLog"})
+rl = session(); rl.job["creator"] = cr2["id"]
+rid = rl._candidate({"t": 7.0, "why": "x", "z": 5.0, "sig": {"loud": 5.0}})
+rl._verdict({"t": 1, "cand": rid, "transcript": 90}, "Clipped: both judges agreed")
+fromfile = signals.log_for(cr2["id"]).read()
+check("the real log path writes the creator's signals.jsonl", (rid in fromfile, fromfile[rid]["sent"], fromfile[rid]["words"],
+      (creators.root(cr2["id"]) / "signals.jsonl").exists()), (True, True, 90, True))
 
 # ---- outcomes reach the log
 from studio import picks
@@ -494,17 +529,18 @@ check("note() with no candidate or no log does nothing", (signals.note(None, "a"
 
 from studio import posting
 seen = []
-signals.note_for = lambda cr, cand, **f: seen.append((cr, cand, f))
 pp = {"creator": "c1", "cand": "abc", "views": None}
-posting._set_views(pp, 12); posting._set_views(pp, 12); posting._set_views(pp, 30)
+with patched(signals, "note_for", lambda cr, cand, **f: seen.append((cr, cand, f))):
+    posting._set_views(pp, 12); posting._set_views(pp, 12); posting._set_views(pp, 30)
 check("views are logged once per change", seen, [("c1", "abc", {"views": 12}), ("c1", "abc", {"views": 30})])
 
 from studio import picks
 seen.clear()
 jb = {"id": "jx", "creator": "c9", "dir": tempfile.mkdtemp(), "points": [{"id": "pt1", "t": 100.0, "score": 0, "reason": "", "cand": "cc1",
       "hold": {"status": "ready", "file": "points/pt1.mp4", "from": 40.0, "to": 160.0, "error": None}}], "cuts": []}
-live.jobs.submit_live = lambda f: None
-picks.make_cut(jb, "pt1", 10, 30)
+with patched(signals, "note_for", lambda cr, cand, **f: seen.append((cr, cand, f))), \
+        patched(live.jobs, "submit_live", lambda f: None), patched(live.jobs, "save", lambda j: None):
+    picks.make_cut(jb, "pt1", 10, 30)
 check("making a cut logs it as downloaded", seen, [("c9", "cc1", {"downloaded": True})])
 
 print("ALL PASSED" if not fails else f"{len(fails)} failed"); sys.exit(1 if fails else 0)

@@ -1601,7 +1601,7 @@ function onLink(input) {
   linkTimer = setTimeout(() => { if (input.value.trim() === u) takeLink(A, u, input); }, 900);   // other link shapes: take it once typing stops
 }
 document.addEventListener("input", e => { if (e.target.id === "url") onLink(e.target);
-  if (e.target.closest?.("#cform") && e.target.dataset.k && !/checkbox|radio/.test(e.target.type)) dirty(true); });
+  if (e.target.closest?.("#cform") && (e.target.dataset.k || e.target.dataset.w) && !/checkbox|radio/.test(e.target.type)) dirty(true); });
 document.addEventListener("keydown", e => { if (e.target.id === "url" && e.key === "Enter" && e.target.value.trim() && looksLink(e.target.value.trim())) { e.preventDefault(); clearTimeout(linkTimer); takeLink(att(), e.target.value.trim(), e.target); } });
 document.addEventListener("click", e => {
   const r = e.target.closest("[data-rm]"), A = att(); if (!r || A.busy) return;

@@ -189,6 +189,7 @@ class Session:
         """
         now = time.time()
         if self.ai_busy and now - self.ai_busy < config.LIVE_AI_TIMEOUT + 60:
+            signals.note(self._log(), cand, sent=False, result="AI busy")
             return
 
         def work():
@@ -348,13 +349,19 @@ class Session:
                                            "reason": f"Viewers clipped this ({b['people']} people)", "from": "viewers",
                                            "cand": b.get("cand")})
                 if p is None:      # the same moment was listed already (by the AI or a jump): note the viewers on it
-                    marked = False
+                    marked, into = False, None
                     with self.lock:
                         for q in self.job["points"]:
                             if abs(q["t"] - b["t"]) < 10:
                                 q["viewers"] = max(int(q.get("viewers") or 0), int(b["people"]))
+                                if b.get("cand") and not q.get("cand"):
+                                    q["cand"] = b["cand"]       # the point now follows the viewers' candidate
+                                elif b.get("cand"):
+                                    into = q["cand"]
                                 marked = True
                                 break
+                    if into:
+                        signals.note(self._log(), b["cand"], merged_into=str(into)[:40])
                     if marked:
                         jobs.save(self.job)      # outside the lock, like every other save
                     ctx.bump()
@@ -372,7 +379,8 @@ class Session:
                 picks.add_point(self, {"start": max(0.0, b["t"] - 30), "end": b["t"] + 10, "peak": b["t"], "score": 0,
                                        "reason": why, "from": "viewers", "cand": b["cand"]})
         else:              # sent to the AI like a jump, and strong enough to rank high; waits if another jump is pending
-            self.viewer_queue.append(b)
+            with self.lock:
+                self.viewer_queue.append(b)
             self._flush_viewer_queue()
 
     def stop(self, note="Stopped by you"):
@@ -901,8 +909,13 @@ class Session:
         del self.verdicts[:-6]
         if cand:           # what happened to this candidate, for the log (short labels and numbers only)
             sent = not result.startswith(("Skipped", "Passed over"))
-            signals.note(self._log(), cand, sent=sent, result=result[:signals.MAX_TEXT], words=v.get("transcript"),
+            signals.note(self._log(), cand, sent=sent, result=self._label(result), words=v.get("transcript"),
                          reaction=v.get("reaction"))
+
+    @staticmethod
+    def _label(result):
+        """A short fixed label for the log: never the text of an error, which could hold anything."""
+        return "ai error" if result.startswith("AI error") else result[:signals.MAX_TEXT]
 
     def _log(self):
         try:
@@ -920,9 +933,9 @@ class Session:
         w = sp.get("chat")
         if w:
             v.update(convergence=w["convergence"], clip_requests=w["clip_people"],
-                     reactions=min(w["people"], sum(w["types"].values())))
+                     reactions=min(w["people"], sum(w["types"].get(k, 0) for k in ("laugh", "shock", "hype"))))
         fused = signals.fuse(v, self.settings.get("sig_weights"))
-        sp["score"] = max(fused, 80) if v["viewer_clips"] >= 3 else fused     # viewers' clips always rank high
+        sp["score"] = fused
         kind = "viewers" if v["viewer_clips"] else (w.get("top_kind") or "chat") if w else ("loud" if v["loud"] >= v["chat"] else "chat")
         log = self._log()
         if log is None:
@@ -930,7 +943,7 @@ class Session:
         try:
             sp["cand"] = log.add({"job": str(self.job.get("id") or "")[:40], "t": round(time.time()), "at": round(sp["t"]),
                                   "values": {k: round(float(x), 2) for k, x in v.items()}, "score": fused,
-                                  "rank": sp["score"], "sent": False, "kind": kind[:40]})
+                                  "sent": False, "kind": kind[:40]})
         except Exception:  # noqa: BLE001
             return None
         return sp["cand"]

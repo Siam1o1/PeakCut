@@ -234,8 +234,11 @@ _SCALE = {"loud": 6.0, "chat": 6.0, "convergence": 1.0, "reactions": 5.0, "clip_
 
 def fuse(values, weights=None) -> int:
     """All the signs a moment has, as one number from 0 to 100. Each sign is first scaled to 0..1 (a z-score of 6 or
-    more is full, five people with a reaction, three asking for a clip, three viewer clips), then the creator's
-    weights are used to average them. A sign that is not known counts as nothing, not as missing."""
+    more is full, five people with a reaction, three asking for a clip, three viewer clips). Then they are combined so
+    that ONE strong sign is enough and several weaker ones add up: the chance that nothing is going on is the
+    product of each sign's "nothing here" share, and the creator's weights say how far each sign is trusted (the
+    heaviest weight counts fully, a lighter one counts for its share of it). A weight of 0 leaves a sign out. A sign
+    that is not known counts as nothing."""
     w = dict(DEFAULT_WEIGHTS)
     for k, v in (weights or {}).items():
         if k in w:
@@ -243,19 +246,21 @@ def fuse(values, weights=None) -> int:
                 w[k] = max(0.0, float(v))
             except (TypeError, ValueError):
                 pass
-    total = sum(w.values())
-    if total <= 0:
+    top = max(w.values())
+    if top <= 0:
         return 0
-    got = 0.0
+    quiet = 1.0
     for k, weight in w.items():
+        if weight <= 0:
+            continue
         try:
             x = float((values or {}).get(k) or 0.0) / _SCALE[k]
         except (TypeError, ValueError):
             x = 0.0
         if x != x:
             x = 0.0
-        got += weight * min(1.0, max(0.0, x))
-    return int(round(100 * got / total))
+        quiet *= (1.0 - min(1.0, max(0.0, x))) ** (weight / top)
+    return int(round(100 * (1.0 - quiet)))
 
 
 # ---------------------------------------------------------------- the log

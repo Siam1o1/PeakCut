@@ -125,8 +125,12 @@ folder is `creators.root(cid)`.
 ## Step 5: one score, and a log
 
 - `signals.fuse(values, weights)` combines the signals into one score from 0 to 100: loudness z, chat z,
-  convergence, reaction counts, clip requests, viewer-clip burst. Weights per creator (setting `sig_weights`, a
-  small dict with defaults), editable in Setup as numbers.
+  convergence, reaction counts (laugh, shock and hype only), clip requests, viewer-clip burst. Weights per creator
+  (setting `sig_weights`, a small dict with defaults), editable in Setup as numbers. Each signal is scaled to
+  v in 0..1 (z / 6, convergence as is, reactions / 5, clip requests / 3, viewer clips / 3), then combined as a
+  weighted noisy-OR: `score = round(100 * (1 - prod((1 - v_i) ** (w_i / max_w))))` over signals with w_i > 0
+  (all weights 0 gives 0). One full signal gives 100, even a lightly weighted one; a lightly weighted partial
+  signal counts for less than a heavily weighted one; several partial ones add up.
 - Only the top candidates (step 1's top-N) go to the AI judges.
 - Every candidate is logged as one JSON line in `creators/<id>/signals.jsonl`: time, recording id, its signal
   values, fused score, whether it was sent to the AI, the AI's verdict and rating (step 6), and later whether the
