@@ -826,6 +826,8 @@ dialog[open]{animation:fadein .16s ease}
 .pt-head{display:flex;align-items:center;gap:8px}.pt-head .grow{flex:1}
 .pt video{width:100%;border-radius:8px;background:#17110E;aspect-ratio:16/9}
 .pt .q{color:var(--dim);font-style:italic}
+.rate{display:flex;flex-wrap:wrap;gap:6px}.rk{display:inline-flex;gap:5px;align-items:baseline;font-size:13px;font-weight:600;padding:1px 8px;border-radius:8px;background:var(--muted);font-variant-numeric:tabular-nums}.rk small{font-size:11px;font-weight:500;color:var(--dim)}
+.lt-h2{display:flex;align-items:center;justify-content:space-between;gap:8px}.lt-sort{font-weight:500;cursor:pointer}
 .cut{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:8px;border-radius:10px;background:var(--muted)}
 .cut .grow{flex:1}
 @media (max-width:860px){.lt-live{grid-template-columns:1fr}.lt-lines{height:45vh}}
@@ -1374,7 +1376,7 @@ function go(v, tab, fromHistory) {
   else if (v === "library") view.innerHTML = `<div id="add"></div><div id="jobs"></div>`;
   else if (v === "settings") view.innerHTML = `<div id="sform"></div>`;
   else if (v === "usage") { view.innerHTML = `<div id="usage"></div>`; loadUsage(); }
-  else if (v === "transcriber") { view.innerHTML = `<div id="ltstart"></div><div class="lt-live" id="ltlive" hidden><section class="lt-tr"><h3>Transcript</h3><div id="ltlines" class="lt-lines" aria-live="off"></div></section><section><h3>Moments</h3><div id="ltpoints"></div></section></div><div id="ltdone"></div>`; S.ltJ = null; }
+  else if (v === "transcriber") { view.innerHTML = `<div id="ltstart"></div><div class="lt-live" id="ltlive" hidden><section class="lt-tr"><h3>Transcript</h3><div id="ltlines" class="lt-lines" aria-live="off"></div></section><section><h3 class="lt-h2">Moments<label class="pill lt-sort"><input type="checkbox" id="lt_newest"> Newest first</label></h3><div id="ltpoints"></div></section></div><div id="ltdone"></div>`; S.ltJ = null; const nb = $("#lt_newest"); if (nb) nb.checked = ltNewest(); }
   else view.innerHTML = `<div id="stream"></div><div id="cbody"></div>`;   // the live player stays put across tabs: no restart, no rebuffer
   if ($("#add")) drawAdd(v === "overview" ? "hero" : "compact");
   if (v === "overview" && window.GradientASCII) { try { window._gaStop = GradientASCII($("#appAscii"), {colors: ["#ffb27a", "#ffffff", "#ffd2ae", "#ffe0c2", "#fff1e6"], shape: "horizon", lightMode: true, cellSize: 16, density: 0.8, glyphOpacity: 0.26, gradientOpacity: 0.32, glow: 0.06, grain: 0.06, mouseInteraction: false, clickEffect: "none"}); } catch {} }
@@ -1717,6 +1719,10 @@ function postPills(c) {
     return p.url ? `<a class="pill ${cls}" href="${esc(p.url)}" target="_blank" rel="noopener">${txt}</a>` : `<span class="pill ${cls}" title="${esc(p.error || "")}">${txt}</span>`;
   }).join("");
 }
+/* A video's clips, best score first when every one of them has a rating; otherwise in the order they were made. */
+function clipsSorted(clips) {
+  return clips.every(c => c.rating) ? [...clips].sort((a, b) => (b.score || 0) - (a.score || 0)) : clips;
+}
 function clipHtml(j, c) {
   const m = `/media/${j.id}/`, a = `data-j="${j.id}" data-c="${esc(c.id)}"`;
   const body = c.status === "done" ? `<img src="${m}${esc(c.cover)}?v=${c.version}" alt="" loading="lazy"><span class="veil"><span>${ic("play")}</span></span>`
@@ -1783,7 +1789,7 @@ function jobHtml(j) {
     ${busy ? `<div class="bar"><i style="width:${Math.round(j.progress * 100)}%"></i></div><p class="sub">${esc(j.stage)} · ${Math.round(j.progress * 100)}%</p>` : ""}
     ${j.status === "done" && !j.clips.length ? `<p class="sub">${esc(j.stage)}</p>` : ""}
     ${j.error ? `<div class="err">${esc(j.error)}<button class="rep" data-act="report" data-ctx="${esc("Video failed: " + (j.title || j.source.name || "") + " | " + j.error)}">Report this</button></div>` : ""}${j.ai?.note ? `<p class="sub">${esc(j.ai.note)}</p>` : ""}
-    ${j.clips.length ? `<div class="grid">${j.clips.map(c => clipHtml(j, c)).join("")}</div>` : ""}`;
+    ${j.clips.length ? `<div class="grid">${clipsSorted(j.clips).map(c => clipHtml(j, c)).join("")}</div>` : ""}`;
 }
 /* ---- selecting several videos and clips: delete or download them together */
 const sel = () => (S.sel = S.sel || new Set());
@@ -2211,6 +2217,7 @@ function drawClipDlg(full) {
     dlg.innerHTML = `<div class="editor"><div class="stage" id="stage">${stage}</div>
       <div class="panel">
         <div class="job-head" style="margin:0"><div><span class="badge ${scoreCls(c.score)}" style="position:static">${c.judges ? "Words " + c.judges.words + (c.judges.reaction ? " · Reaction " + c.judges.reaction : "") : c.score ? "Score " + c.score : "Clipped by hand"}</span>
+          <div style="margin-top:8px">${ratingHtml(c.rating)}</div>
           <p class="sub" style="margin-top:8px">${esc(c.reason || "")}</p></div><button class="btn icon ghost" data-act="closedlg" aria-label="Close">${ic("x")}</button></div>
         <h3>On the video</h3>
         <label class="f">Big text<input data-f="hook" value="${esc(c.hook)}"></label>
@@ -2263,6 +2270,22 @@ function cutHtml(j, c) {
     <button class="btn sm icon ghost" data-act="cutdel" data-j="${j.id}" data-c="${esc(c.id)}" aria-label="Delete this clip">${ic("trash")}</button>
     ${c.note ? `<p class="sub" style="flex-basis:100%;margin:0">${esc(c.note)}</p>` : ""}</div>`;
 }
+/* The viral rating: five marks from the AI (0 to 10) and the total worked out by the server. */
+const RATE_NAMES = [["hook", "Hook"], ["alone", "Alone"], ["emotion", "Emotion"], ["payoff", "Payoff"], ["share", "Share"]];
+function ratingHtml(r) {
+  if (!r || r.value == null) return "";
+  const marks = RATE_NAMES.map(([k, n]) => r[k] != null ? `<span class="rk"><small>${n}</small>${esc(String(r[k]))}</span>` : "").join("");
+  return `<div class="rate">${marks}</div>${r.why ? `<p class="sub" style="margin:0">${esc(r.why)}</p>` : ""}`;
+}
+function ltNewest() {
+  if (S.ltNewest == null) { try { S.ltNewest = localStorage.getItem("lt_newest") === "1"; } catch { S.ltNewest = false; } }
+  return S.ltNewest;
+}
+/* Moments, best rating first (newest first among equals), or purely newest first when the box is ticked. */
+function ptSorted(points) {
+  const list = [...(points || [])].reverse();
+  return ltNewest() ? list : list.sort((a, b) => ((b.rating?.value ?? b.score) || 0) - ((a.rating?.value ?? a.score) || 0));
+}
 function ptHtml(j, p) {
   const h = p.hold, v = ltVal(p, j), cuts = (j.cuts || []).filter(c => c.point === p.id);
   const kept = h.status === "ready" ? `<video src="/media/${j.id}/${esc(h.file)}#t=${Math.max(0, p.t - v.lead - h.from).toFixed(1)}" preload="metadata" controls playsinline></video>
@@ -2270,10 +2293,10 @@ function ptHtml(j, p) {
       <button class="btn primary" data-act="ptcut" data-j="${j.id}" data-p="${esc(p.id)}">${ic("down")}Download clip</button>`
     : h.status === "error" ? `<div class="err" style="margin:0">${esc(h.error)}</div>`
     : `<p class="sub">Keeping this part of the stream… it is ready a minute after the moment.</p>`;
-  return `<div class="pt"><div class="pt-head"><b>${fmt(p.t)}</b>${p.score ? `<span class="badge ${scoreCls(p.score)}" style="position:static">${p.score}</span>` : ""}
-      <span class="pill">${esc(FROM[p.from] || "AI")}</span><span class="grow"></span>
+  return `<div class="pt"><div class="pt-head"><b>${fmt(p.t)}</b>${p.rating ? `<span class="badge ${scoreCls(p.rating.value)}" style="position:static" title="Viral rating, 0 to 100">Viral ${esc(String(p.rating.value))}</span>` : p.score ? `<span class="badge ${scoreCls(p.score)}" style="position:static">${esc(String(p.score))}</span>` : ""}
+      <span class="pill">${esc(FROM[p.from] || "AI")}</span>${p.viewers ? `<span class="pill">${esc(String(p.viewers))} viewers clipped this</span>` : ""}<span class="grow"></span>
       <button class="btn sm icon ghost" data-act="ptdel" data-j="${j.id}" data-p="${esc(p.id)}" aria-label="Delete this moment">${ic("trash")}</button></div>
-    ${p.reason ? `<p style="margin:0">${esc(p.reason)}</p>` : ""}${p.text ? `<p class="sub q" style="margin:0">“${esc(p.text)}”</p>` : ""}
+    ${ratingHtml(p.rating)}${p.reason ? `<p style="margin:0">${esc(p.reason)}</p>` : ""}${p.text ? `<p class="sub q" style="margin:0">“${esc(p.text)}”</p>` : ""}
     ${kept}${cuts.map(c => cutHtml(j, c)).join("")}</div>`;
 }
 function drawTranscriber() {
@@ -2292,12 +2315,12 @@ function drawTranscriber() {
         <div class="composer-input">${ic("link")}<input id="lt_url" placeholder="Stream link (empty: use the creator's channel)" autocomplete="off" aria-label="Stream link"></div>
         <button class="btn primary" id="lt_go"><span class="rdot"></span>Start</button></form>`);
   $("#ltlive").hidden = !live;
-  if (live && !busy && !playing) put($("#ltpoints"), (live.points || []).length ? [...live.points].reverse().map(p => ptHtml(live, p)).join("")
+  if (live && !busy && !playing) put($("#ltpoints"), (live.points || []).length ? ptSorted(live.points).map(p => ptHtml(live, p)).join("")
     : `<p class="sub">Moments appear here as they happen. You can also press Mark on any line of the transcript.</p>`);
   if (!busy && !playing) put($("#ltdone"), done.length ? `<h3 class="lt-h">Finished recordings</h3>` + done.map(j => `<div class="pt" style="gap:12px">
       <div class="pt-head"><b>${esc(j.title || j.source.name)}</b>${j.status === "error" ? `<span class="err" style="margin:0">${esc(j.error || j.stage)}</span>` : `<span class="sub">${esc(j.stage)}</span>`}<span class="sub">${when(j.created)} · ${(j.points || []).length} moments</span><span class="grow"></span>
         <button class="btn sm icon ghost" data-act="deljob" data-j="${j.id}" aria-label="Delete this recording">${ic("trash")}</button></div>
-      ${[...(j.points || [])].reverse().map(p => ptHtml(j, p)).join("")}</div>`).join("")
+      ${ptSorted(j.points).map(p => ptHtml(j, p)).join("")}</div>`).join("")
     : live ? "" : `<div class="empty"><img src="/brand/favicon.svg" alt=""><b>Nothing recorded yet</b>Choose a creator, paste their stream link if you like, and press Start.</div>`);
   for (const j of ltJobs()) for (const c of j.cuts || []) if (c.status === "ready" && S.ltAuto?.has(c.id)) {
     S.ltAuto.delete(c.id);
@@ -2490,6 +2513,7 @@ function syncCaptionStyle(toggle) {
 document.addEventListener("change", async e => {
   const t = e.target;
   if (t.id === "lt_creator") { S.ltCreator = t.value; return; }
+  if (t.id === "lt_newest") { S.ltNewest = t.checked; try { localStorage.setItem("lt_newest", t.checked ? "1" : ""); } catch {} drawTranscriber(); return; }
   if (t.id === "o_creator") {
     const toggle = $("#o_captions"), c = S.creators.find(c => c.id === t.value);
     if (!toggle.dataset.overridden) { toggle.checked = c?.captions !== false; syncCaptionStyle(toggle); }

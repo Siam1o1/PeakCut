@@ -854,6 +854,9 @@ class Session:
         self.tokens += tok
         keep = [c for c in cands if c["score"] >= (40 if must else st["min_score"])]
         verdict["transcript"] = max((c["score"] for c in cands), default=0)
+        if cand and cands and cands[0].get("rating"):
+            # The marks the AI gave the best moment. The one-line reason is text, and the log keeps numbers only.
+            signals.note(self._log(), cand, rating={k: v for k, v in cands[0]["rating"].items() if k != "why"})
         if not keep:
             return self._verdict(verdict, "Words judge: nothing clip-worthy")
         z = brain.loud_zscore(np.array(self.db, dtype=np.float32))

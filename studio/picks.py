@@ -76,6 +76,8 @@ def add_point(s, c):
              "reason": str(c.get("reason") or "")[:300], "text": text[:600], "from": c.get("from") or "ai",
              "made_at": time.time(),
              "hold": {"status": "waiting", "file": None, "from": None, "to": None, "error": None}}
+        if isinstance(c.get("rating"), dict):
+            p["rating"] = c["rating"]             # the five marks, the one-line reason and the total
         if c.get("cand"):
             p["cand"] = str(c["cand"])[:40]       # the id of its line in the creator's learning log
         job["points"].append(p)

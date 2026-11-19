@@ -227,6 +227,28 @@ def clip_edges(peak, lines, min_len, max_len, calm_after=None, lead_min=3):
     return round(start, 2), round(end, 2)
 
 
+# ---------------------------------------------------------------- the viral rating
+# The AI gives five marks from 0 to 10. The rating is worked out here, not by the AI: a weighted sum that tops out at 100.
+RATING_WEIGHTS = {"hook": 3, "alone": 2, "emotion": 2, "payoff": 2, "share": 1}
+
+
+def rating(sub):
+    """The five marks (hook, alone, emotion, payoff, share) as one number from 0 to 100, or None when one is missing
+    or is not a number. A mark outside 0 to 10 counts as the nearest end."""
+    if not isinstance(sub, dict):
+        return None
+    total = 0.0
+    for k, w in RATING_WEIGHTS.items():
+        try:
+            v = float(sub[k])
+        except (KeyError, TypeError, ValueError):
+            return None
+        if v != v:
+            return None
+        total += w * min(10.0, max(0.0, v))
+    return int(round(total))
+
+
 # ---------------------------------------------------------------- one score
 DEFAULT_WEIGHTS = {"loud": 1.0, "chat": 1.0, "convergence": 1.0, "reactions": 0.5, "clip_requests": 1.0, "viewer_clips": 2.0}
 _SCALE = {"loud": 6.0, "chat": 6.0, "convergence": 1.0, "reactions": 5.0, "clip_requests": 3.0, "viewer_clips": 3.0}

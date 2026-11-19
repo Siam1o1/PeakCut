@@ -32,6 +32,27 @@ got = brain.judge_transcript(ws(140), 0, 70, min_len=15, max_len=60)[0]
 check("a peak that is not a number is dropped", got[0]["peak"] if got else "no clip", None)
 check("the rules ask the AI for the peak", "peak:" in brain.RULES and "peak" in brain.SCHEMA["items"]["properties"])
 
+# ---- the viral rating
+sub = {"r_hook": 8, "r_alone": 6, "r_emotion": 9, "r_payoff": 7, "r_share": 5, "r_why": "Big scream, clear payoff."}
+answer.clear(); answer.update(base, **sub)
+got = brain.judge_transcript(ws(140), 0, 70, min_len=15, max_len=60)[0]
+want = 8 * 3 + 6 * 2 + 9 * 2 + 7 * 2 + 5
+check("the rating is computed in code and becomes the score", (got[0]["rating"]["value"], got[0]["score"]) if got else None, (want, want))
+check("the rating keeps the sub-scores and the reason", got[0]["rating"] if got else None,
+      {"hook": 8, "alone": 6, "emotion": 9, "payoff": 7, "share": 5, "why": "Big scream, clear payoff.", "value": want})
+answer.clear(); answer.update(base)
+got = brain.judge_transcript(ws(140), 0, 70, min_len=15, max_len=60)[0]
+check("no sub-scores: the AI's own score stays, no rating", (got[0]["score"], "rating" in got[0]) if got else None, (90, False))
+answer.clear(); answer.update(base, **{**sub, "r_hook": 40, "r_why": "see http://x.com now"})
+got = brain.judge_transcript(ws(140), 0, 70, min_len=15, max_len=60)[0]
+check("sub-scores are clamped and the reason is cleaned", (got[0]["rating"]["hook"], "http" in got[0]["rating"]["why"]) if got else None, (10, False))
+check("the rules and the schema ask for the sub-scores", all(k in brain.RULES and k in brain.SCHEMA["items"]["properties"]
+      for k in ("r_hook", "r_alone", "r_emotion", "r_payoff", "r_share", "r_why")))
+check("the sub-scores are optional", "r_hook" not in brain.SCHEMA["items"]["required"])
+answer.clear(); answer.update(base, **sub)
+t0 = brain._tidy(dict(answer), 0, 0)
+check("a hand clip (start and end 0) still gets a rating", t0["rating"]["value"], want)
+
 # ---- the maths
 from studio import picks
 check("with a peak, the point is the peak", picks.point_time({"start": 10, "end": 50, "peak": 31.5}), 31.5)

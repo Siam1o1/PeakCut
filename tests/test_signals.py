@@ -506,6 +506,17 @@ with patched(live.jobs, "save", lambda j: None):
     ln._viewer_burst({"t": 101, "people": 4})
 vid = [k for k in ln.log.read() if k != "other1"][0]
 check("or logs merged_into when the point already had one", (ln.job["points"][0]["cand"], ln.log.read()[vid].get("merged_into")), ("other1", "other1"))
+# the rating of the best moment reaches the log (numbers only), and a point keeps its rating
+rk = logged(min_len=10, max_len=40, min_score=99); rk.pick = True; rk.words = tw; rk.t_done = 250; rk.job["points"] = []
+rc = rk._candidate({"t": 100.0, "why": "x", "z": 5.0, "sig": {"loud": 5.0}})
+rated = {"start": 80.0, "end": 110.0, "score": 70, "reason": "r", "peak": None,
+         "rating": {"hook": 7, "alone": 7, "emotion": 7, "payoff": 7, "share": 7, "why": "a line that is longer than forty characters for sure", "value": 70}}
+_old = _brain.judge_transcript
+_brain.judge_transcript = lambda *a, **k: ([dict(rated)], 5)
+rk._ai_check((70, 130), "Jump: x", 5.0, peak=100, cand=rc)
+_brain.judge_transcript = _old
+check("the rating is logged without its text", rk.log.read()[rc].get("rating"), {"hook": 7, "alone": 7, "emotion": 7, "payoff": 7, "share": 7, "value": 70})
+
 # an AI check dropped because another is running is logged
 lb = logged(); bc = lb._candidate({"t": 5.0, "why": "x", "z": 5.0, "sig": {"loud": 5.0}})
 lb.ai_busy = time.time()
@@ -542,5 +553,21 @@ with patched(signals, "note_for", lambda cr, cand, **f: seen.append((cr, cand, f
         patched(live.jobs, "submit_live", lambda f: None), patched(live.jobs, "save", lambda j: None):
     picks.make_cut(jb, "pt1", 10, 30)
 check("making a cut logs it as downloaded", seen, [("c9", "cc1", {"downloaded": True})])
+
+# ---- viral rating
+ten = {"hook": 10, "alone": 10, "emotion": 10, "payoff": 10, "share": 10}
+check("rating: all tens is 100", signals.rating(ten), 100)
+check("rating: all fives is 50", signals.rating({k: 5 for k in ten}), 50)
+check("rating: the hook counts three times", signals.rating({**{k: 0 for k in ten}, "hook": 10}), 30)
+check("rating: a missing sub-score gives None", signals.rating({"hook": 9, "alone": 9, "emotion": 9, "payoff": 9}), None)
+check("rating: nothing at all gives None", signals.rating(None), None)
+check("rating: values outside 0 to 10 are clamped", (signals.rating({k: 99 for k in ten}), signals.rating({k: -4 for k in ten})), (100, 0))
+check("rating: text that is not a number gives None", signals.rating({**ten, "hook": "high"}), None)
+
+# a point keeps the rating
+with patched(live.jobs, "save", lambda j: None):
+    pk = session(); pk.pick = True; pk.job["points"] = []
+    pnt = picks.add_point(pk, {"start": 80.0, "end": 110.0, "peak": 100.0, "score": 70, "reason": "r", "rating": {"hook": 7, "value": 70}})
+check("a point keeps the rating", pnt["rating"], {"hook": 7, "value": 70})
 
 print("ALL PASSED" if not fails else f"{len(fails)} failed"); sys.exit(1 if fails else 0)

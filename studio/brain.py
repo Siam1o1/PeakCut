@@ -7,7 +7,7 @@ import time
 
 import numpy as np
 
-from . import ai, config, games, usage, roman
+from . import ai, config, games, signals, usage, roman
 
 WINDOW_SEC, OVERLAP_SEC = 15 * 60, 60
 
@@ -27,6 +27,12 @@ SCHEMA = {
             "highlight_words": {"type": "ARRAY", "items": {"type": "STRING"}},
             "reason": {"type": "STRING"},
             "peak": {"type": "NUMBER"},
+            "r_hook": {"type": "NUMBER"},
+            "r_alone": {"type": "NUMBER"},
+            "r_emotion": {"type": "NUMBER"},
+            "r_payoff": {"type": "NUMBER"},
+            "r_share": {"type": "NUMBER"},
+            "r_why": {"type": "STRING"},
         },
         "required": ["start", "end", "score", "hook", "title", "description", "hashtags", "reason"],
     },
@@ -60,6 +66,11 @@ Rules:
 - score: 0-100, how likely a stranger keeps watching. Be honest; most clips are 50-80.
 - peak: the [seconds] value of the single instant people would share (the punchline, the reaction, the play).
   It lies between start and end.
+- r_hook, r_alone, r_emotion, r_payoff, r_share: five marks from 0 to 10, each judged on its own and honestly
+  (most clips are 3 to 7). r_hook: do the first 3 seconds grab a stranger. r_alone: does it make sense with no
+  context. r_emotion: is it funny, shocking or hype. r_payoff: does the moment deliver on its setup. r_share: would
+  someone send it to a friend.
+- r_why: one short line (under 120 characters) on what the marks are based on.
 - hook: at most 5 words, ALL CAPS, shown as big text on the video. Curiosity, but true to what happens.
 - title: at most 70 characters, for the post.
 - description: one or two sentences.
@@ -138,7 +149,11 @@ def _tidy(c, s, e, game=None):
         if t and t.lower() not in {x.lower() for x in tags}:
             tags.append(t)
     words = c.get("highlight_words") if isinstance(c.get("highlight_words"), list) else []
-    return {
+    # The five marks come from the AI, the rating is worked out here. Without all five the AI's own score stays.
+    marks = {k: (max(0.0, min(10.0, _num(c.get("r_" + k)))) if _num(c.get("r_" + k), None) is not None else None)
+             for k in signals.RATING_WEIGHTS}
+    value = signals.rating(marks)
+    out = {
         "start": s, "end": e, "score": max(0, min(100, int(_num(c.get("score"))))),
         "category": cat if cat in CATEGORIES else "other",
         "hook": roman.to_roman(_text(c.get("hook"), 60)).upper(), "title": roman.to_roman(_text(c.get("title"), 100)),
@@ -147,6 +162,10 @@ def _tidy(c, s, e, game=None):
         "highlight_words": [roman.to_roman(_text(h, 30)) for h in words][:8],
         "reason": _text(c.get("reason"), 200),
     }
+    if value is not None:
+        out["rating"] = {**{k: round(v, 1) for k, v in marks.items()}, "why": _text(c.get("r_why"), 160), "value": value}
+        out["score"] = value
+    return out
 
 
 def _same_word(old, new):
@@ -459,6 +478,7 @@ def judge_transcript(words, start, now, title="", uploader="", min_len=15, max_l
         t = _tidy(c, s, e, game)
         t["peak"] = _peak(c, s, e)
         clips.append(t)
+    clips.sort(key=lambda c: -c["score"])      # the rating can reorder what the AI scored
     return clips, spent
 
 
