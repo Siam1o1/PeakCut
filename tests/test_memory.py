@@ -46,69 +46,123 @@ check("reset removes both files", [p.exists() for p in (creators.root(cid) / "be
 check("no profile: empty block", memory.prompt_block(cid), "")
 check("the setting is on by default and saved as on/off", (creators.DEFAULTS["sig_memory"], creators._clean({"sig_memory": 0})["sig_memory"]), (True, False))
 
-# ---- after a stream
-MARK = "ZXQ-CHAT-MARKER-77"
-def session():
+# ---- when a stream ends: numbers only
+def session(n=600, chat_every=1, chat_per=3):
     rng = np.random.default_rng(3)
-    db_ = list(-30 + rng.normal(0, 1.0, 600))
-    words = [{"w": f"word{i}", "s": float(i), "e": i + 0.5} for i in range(600)]
-    words[200]["w"] = "OH-MY-GOD"
+    db_ = list(-30 + rng.normal(0, 1.0, n))
     job = {"id": "j1", "title": "t", "uploader": "u", "dir": tempfile.mkdtemp(prefix="pc-memory-live-"), "creator": cid, "ai": {},
-           "clips": [], "source": {"url": "", "name": "t"},
-           "points": [{"id": "pt001", "t": 200.0, "start": 190, "end": 230, "from": "ai", "hold": {}},
-                      {"id": "pt002", "t": 400.0, "start": 390, "end": 420, "from": "ai", "hold": {}}],
-           "cuts": [{"id": "cut001", "point": "pt001"}]}
+           "clips": [], "source": {"url": "", "name": "t"}, "points": []}
     s = live.Session(job, dict(creators.get(cid)))
-    s.db, s.words = db_, words
-    s.chat_msgs = {t: [("someone", MARK + " hello")] for t in range(190, 210)}
-    s.chat = collections.Counter({t: 3 for t in range(190, 210)})
+    s.db = db_
     s.chat_on = True
+    s.chat_users = {t: {f"p{t}_{i}" for i in range(chat_per)} for t in range(max(0, n - live.CHAT_KEEP), n)}   # older names are pruned
     s.conv_hist = [(100, 0.2), (200, 0.6)]
     return s
 sent = []
 def fake(prompt, schema=None, purpose="", timeout=None):
     sent.append((prompt, purpose))
-    return {"profile": "Shouts when surprised.\nUpdated 1999-01-01 old line\nSays pog."}, "m", 10
+    return {"profile": "Shouts when surprised.\nUpdated 1999-01-01 old line\nSays pog.\nUpdated 2001-02-03"}, "m", 10
 real = brain.ask_ai
 brain.ask_ai = fake
 try:
     memory.reset(cid)
     memory.save(cid, "Old.", {"loud": {"median": 0.10, "mad": 0.02}, "lag": 5.0, "streams": 1})
     s = session()
-    check("after_stream reports a change", memory.after_stream(s), True)
+    check("a stream ending makes no AI call", (memory.after_stream(s), sent), (True, []))
     text, nums = memory.load(cid)
-    check("the saved text starts with the date line the code adds", text.splitlines()[0], f"Updated {today}")
-    check("and holds the AI's text", "Shouts when surprised." in text and "Says pog." in text)
-    check("one call with the right purpose", [p for _x, p in sent], ["Creator memory"])
-    prompt = sent[0][0]
-    check("the prompt has no chat message text", MARK not in prompt)
-    check("the prompt has the creator's own words around the moment", "OH-MY-GOD" in prompt)
-    check("the prompt has the current profile", "Old." in prompt)
+    check("the profile text is untouched", text, "Old.")
     check("the numbers are a running average", round(nums["loud"]["median"], 4),
           round(0.7 * 0.10 + 0.3 * float(np.median(10 ** (np.array(s.db) / 20))), 4))
-    check("streams counted", nums["streams"], 2)
-    check("lag and convergence kept", nums["lag"] == 5.0 and abs(nums["conv"] - 0.4) < 1e-6)
-    sent.clear()
-    s2 = session(); s2.job["cuts"] = []
-    check("no confirmed moments: no call and no change", (memory.after_stream(s2), sent), (False, []))
-    s3 = session(); s3.job["cuts"] = []; s3.job["points"][0]["from"] = "viewers"
-    check("a viewers' clip burst counts as confirmed", [round(t) for t, _w, _e in memory._confirmed(s3, {})], [200])
-    creators.update(cid, {"sig_memory": False}); sent.clear()
-    check("switched off: no call", (memory.after_stream(session()), sent), (False, []))
+    check("streams counted, lag and convergence kept", nums["streams"] == 2 and nums["lag"] == 5.0 and abs(nums["conv"] - 0.4) < 1e-6)
+    # a long, steady chat: the names older than the kept window are gone, the seed must still be sensible
+    memory.reset(cid); memory.save(cid, "x", {})
+    s = session(n=3 * 3600, chat_per=3)
+    memory.after_stream(s)
+    ch = memory.load(cid)[1]["chat"]
+    check("a 3-hour steady chat saves a median near 3 and not 0", abs(ch["median"] - 3.0) < 0.5 and ch["mad"] >= 0, True)
+    z = signals.series_z([2.0] * 5, seed=memory.seed(cid)["chat"], floor=0.5)
+    check("and a seeded chat z at 2 a second is small", abs(z) < 3, True)
+    check("the floor is used on the seeded path", signals.series_z([2.0] * 5, seed={"median": 3.0, "mad": 0.0}, floor=0.5) > -2.0, True)
+    creators.update(cid, {"sig_memory": False})
+    check("switched off: nothing saved", (memory.after_stream(session()), memory.load(cid)[1].get("streams")), (False, 1))
     creators.update(cid, {"sig_memory": True})
-    before = memory.load(cid)
-    def boom(*a, **k): raise RuntimeError("down")
-    brain.ask_ai = boom
-    check("an AI error leaves the profile as it was", (memory.after_stream(session()), memory.load(cid)), (False, before))
 finally:
     brain.ask_ai = real
-# a log entry with more views than the median counts
+
+# ---- when the next recording starts: the profile
+MARK = "ZXQ-CHAT-MARKER-77"
+from studio import jobs
+with ctx.as_user(auth.LOCAL_ID):
+    old = jobs.create({"type": "url", "url": "https://example.com/v", "name": "v"}, {}, enqueue=False, creator=cid)
+    words = [{"w": f"word{i}", "s": float(i), "e": i + 0.5} for i in range(600)]
+    words[200]["w"] = "OH-MY-GOD"
+    import json as _j
+    (__import__("pathlib").Path(old["dir"]) / "words.json").write_text(_j.dumps(words), encoding="utf-8")
+JID = str(old["id"])[:40]
+memory.reset(cid)
+memory.save(cid, "Old.", {"loud": {"median": 0.1, "mad": 0.02}})
 log = signals.log_for(cid)
-a = log.add({"job": "j1", "t": 1, "at": 100, "values": {"loud": 5.0}, "score": 80, "sent": True, "kind": "loud"})
-b = log.add({"job": "j1", "t": 1, "at": 300, "values": {"loud": 5.0}, "score": 80, "sent": True, "kind": "loud"})
-log.update(a, views=500); log.update(b, views=10)
-s4 = session(); s4.job["cuts"] = []; s4.job["points"] = []
-check("log entries above the median views are confirmed", [round(t) for t, _w, _e in memory._confirmed(s4, log.read())], [100])
+brain.ask_ai = fake
+check("with no entries there is no call", (memory.learn(cid), sent), (False, []))
+def entry(at, **k):
+    e = {"job": JID, "t": 1000, "at": at, "values": {"loud": 5.0, "chat": 3.0, "convergence": 0.5, "reactions": 2}, "score": 80, "sent": True, "kind": "loud"}
+    e.update(k); return log.add(e)
+a = entry(200); log.update(a, downloaded=True, result="clip made")
+b = entry(300); log.update(b, result="Reaction judge said no, not clipped")      # sent to the AI, nothing else: a false alarm
+c0 = entry(400, sent=False); log.update(c0, viewer_clips=1)
+sent.clear(); brain.ask_ai = fake
+try:
+    check("learn changes the profile", memory.learn(cid), True)
+    check("one call, purpose Creator memory", [p for _x, p in sent], ["Creator memory"])
+    prompt = sent[0][0]
+    check("the prompt has the entry's numbers and the creator's own words", "loudness z 5" in prompt and "OH-MY-GOD" in prompt)
+    check("it has a false alarm too", "False alarm 1" in prompt)
+    check("no chat text in the prompt", MARK not in prompt)
+    check("the prompt has today's date and the current profile", memory._today() in prompt and "Old." in prompt)
+    text, nums = memory.load(cid)
+    check("exactly one Updated line, first, added by the code", [l for l in text.splitlines() if l.startswith("Updated")] == [f"Updated {memory._today()}"] and text.startswith("Updated"))
+    check("the numbers are kept", nums, {"loud": {"median": 0.1, "mad": 0.02}})
+    check("last_update was saved", "last_update" in memory._json(cid), True)
+    sent.clear()
+    check("the same entries are not used again", (memory.learn(cid), sent), (False, []))
+finally:
+    brain.ask_ai = real
+# views: at or above the creator's median counts
+memory.reset(cid); memory.save(cid, "Old.", {})
+log2 = signals.log_for(cid)
+v1 = log2.add({"job": JID, "t": 5, "at": 100, "values": {}, "score": 1, "sent": True}); log2.update(v1, views=500)
+v2 = log2.add({"job": JID, "t": 5, "at": 110, "values": {}, "score": 1, "sent": True}); log2.update(v2, views=1)
+v3 = log2.add({"job": JID, "t": 5, "at": 120, "values": {}, "score": 1, "sent": True}); log2.update(v3, views=2)
+yes, no = memory._split(log2.read(), 0)
+check("entries at or above the median views are confirmed", sorted(e["at"] for _w, e in yes if e.get("views", 0) >= 2) and any(e["views"] == 500 for _w, e in yes), True)
+# an AI error leaves everything as it was; a deleted creator is not brought back; an edit made meanwhile wins
+def boom(*a, **k): raise RuntimeError("down")
+brain.ask_ai = boom
+try:
+    before = (memory.load(cid), memory._json(cid).get("last_update"))
+    check("an AI error leaves the profile as it was", (memory.learn(cid), (memory.load(cid), memory._json(cid).get("last_update"))), (False, before))
+finally:
+    brain.ask_ai = real
+def edit_meanwhile(prompt, schema=None, purpose="", timeout=None):
+    memory.save(cid, "Typed by the owner.")
+    return {"profile": "AI text"}, "m", 1
+brain.ask_ai = edit_meanwhile
+try:
+    check("an edit saved while the update runs wins", (memory.learn(cid), memory.load(cid)[0]), (False, "Typed by the owner."))
+finally:
+    brain.ask_ai = real
+gone = c_post = c.post("/api/creators", json={"name": "Gone"}, headers=H).json()["id"]
+def delete_meanwhile(prompt, schema=None, purpose="", timeout=None):
+    c.delete(f"/api/creators/{gone}", headers=H)
+    return {"profile": "AI text"}, "m", 1
+glog = signals.log_for(gone); g = glog.add({"job": JID, "t": 5, "at": 1, "values": {}, "score": 1, "sent": True}); glog.update(g, downloaded=True)
+brain.ask_ai = delete_meanwhile
+try:
+    memory.learn(gone)
+finally:
+    brain.ask_ai = real
+check("a deleted creator is not brought back", creators.root(gone).exists(), False)
+check("save refuses without the folder", memory.save(gone, "x", {}), False)
 
 # ---- the judges' prompts
 seen = []
@@ -122,6 +176,7 @@ try:
 finally:
     brain.ask_ai = real
 check("both judges get the profile", [("PROFILE-A" in p) for p in seen[:1]] + [("PROFILE-B" in p) for p in seen[1:2]], [True, True])
+check("the signals judge sees the profile before the signal rows", seen[1].index("PROFILE-B") < seen[1].index("Signals from second"))
 
 # ---- a session starts from the saved numbers
 memory.save(cid, "x", {"loud": {"median": 0.03, "mad": 0.003}})

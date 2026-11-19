@@ -1960,8 +1960,14 @@ function drawCreatorForm() {
     <div class="savebar" id="savebar"><span>${ic("warn")}You have unsaved changes</span><button class="btn ghost" data-act="cdiscard">Discard</button><button class="btn primary" data-act="csave">${ic("check")}Save changes</button></div>`;
   loadBehavior();
 }
-const showBehavior = d => { const t = $("#memtext"); if (!t) return; t.value = d.text || ""; $("#memdate").textContent = d.updated ? "Updated " + d.updated : ""; };
-async function loadBehavior() { try { showBehavior(await api(`/api/creators/${creatorId()}/behavior`)); } catch (e) {} }
+let memDraft = null;      // text typed in the notes box and not saved yet, kept when the form is drawn again
+const showBehavior = (d, cid) => { if (cid && cid !== creatorId()) return; const t = $("#memtext"); if (!t) return; t.value = d.text || ""; $("#memdate").textContent = d.updated ? "Updated " + d.updated : ""; };
+async function loadBehavior() {
+  const cid = creatorId(); if (!cid) return;
+  if (memDraft && memDraft.cid === cid) { const t = $("#memtext"); if (t) t.value = memDraft.text; }
+  try { const d = await api(`/api/creators/${cid}/behavior`); if (cid !== creatorId()) return; if (memDraft && memDraft.cid === cid) { $("#memdate").textContent = d.updated ? "Updated " + d.updated : ""; return; } showBehavior(d, cid); } catch (e) {}
+}
+document.addEventListener("input", e => { if (e.target.id === "memtext") memDraft = {cid: creatorId(), text: e.target.value}; });
 
 const creatorForm = () => { const d = {}; $$("#cform [data-k]").forEach(i => { if (i.type === "radio") { if (i.checked) d[i.dataset.k] = i.value; } else d[i.dataset.k] = i.type === "checkbox" ? i.checked : i.value; }); d.accounts = $$("#cform [data-acc]:checked").map(i => i.value); d.sig_weights = {}; $$("#cform [data-w]").forEach(i => { if (i.value !== "") d.sig_weights[i.dataset.w] = Number(i.value); }); return d; };
 const dirty = on => $("#savebar")?.classList.toggle("on", on);
@@ -2657,10 +2663,10 @@ document.addEventListener("click", async e => {
       sel().clear(); await tick(); render();
       return toast(`Deleted ${r.videos} video${r.videos === 1 ? "" : "s"} and ${r.clips} clip${r.clips === 1 ? "" : "s"}` + (r.skipped ? `. ${r.skipped} still being made were left alone.` : ""), "ok");
     }
-    if (a === "memsave") { showBehavior(await send(`/api/creators/${creatorId()}/behavior`, {text: $("#memtext").value}, "PUT")); return toast("Saved", "ok"); }
+    if (a === "memsave") { const cid = creatorId(); const d = await send(`/api/creators/${cid}/behavior`, {text: $("#memtext").value}, "PUT"); memDraft = null; showBehavior(d, cid); return toast("Saved", "ok"); }
     if (a === "memreset") {
       if (!await ask("Reset what PeakCut learned?", "This clears the notes and the saved numbers for this creator. They build up again after the next streams.", "Reset", true)) return;
-      showBehavior(await api(`/api/creators/${creatorId()}/behavior`, {method: "DELETE"})); return toast("Cleared", "ok");
+      const cid = creatorId(); const d = await api(`/api/creators/${cid}/behavior`, {method: "DELETE"}); memDraft = null; showBehavior(d, cid); return toast("Cleared", "ok");
     }
     if (a === "delcreator") {
       const c = S.creators.find(x => x.id === (d.c || creatorId())); if (!c) return;

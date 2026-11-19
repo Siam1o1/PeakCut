@@ -245,6 +245,7 @@ class Session:
         SESSIONS[self.job["id"]] = self
         threading.Thread(target=ctx.bind(self._ingest), daemon=True).start()
         threading.Thread(target=ctx.bind(self._analyze), daemon=True).start()
+        threading.Thread(target=ctx.bind(self._learn_profile), daemon=True, name="memory_start").start()
         if self._baseline():
             threading.Thread(target=self._watch_viewers, daemon=True, name="viewers").start()
         m = re.match(r"^https?://(?:www\.)?twitch\.tv/([A-Za-z0-9_]+)", self.job["source"]["url"])
@@ -933,10 +934,20 @@ class Session:
             return ""
 
     def _learn(self):
-        """After the stream, on the live worker: update what is known about this creator. Never raises."""
+        """After the stream, on its own thread: keep this stream's normal loudness and chat for next time. Never raises."""
         try:
             if self.settings.get("sig_memory", True) is not False:
+                usage.set_context(self.job.get("creator"), self.job.get("title") or "Live stream")
                 memory.after_stream(self)
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _learn_profile(self):
+        """When a recording starts, on its own thread: learn from what happened to the candidates of earlier streams."""
+        try:
+            if self.settings.get("sig_memory", True) is not False and self.job.get("creator"):
+                usage.set_context(self.job["creator"], "Creator memory")
+                memory.learn(self.job["creator"])
         except Exception:  # noqa: BLE001
             pass
 
@@ -1218,7 +1229,7 @@ class Session:
 
         jobs.submit_live(cleanup)
         if not failed:
-            jobs.submit_live(self._learn)          # after the clips are made, and never in the way of Stop
+            threading.Thread(target=ctx.bind(self._learn), daemon=True, name="memory").start()   # never in the way of Stop
 
 
 def recover(job):

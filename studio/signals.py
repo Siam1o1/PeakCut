@@ -38,7 +38,8 @@ def series_z(series, now_len=5, window=900, exclude=10, seed=None, floor=None) -
     if hist.size < 60:
         if not seed:
             return 0.0
-        return float((now - seed["median"]) / (MAD_TO_SD * max(seed["mad"], 1e-6)))
+        lo = floor if floor is not None else max(1e-6, 0.05 * abs(seed["median"]))
+        return float((now - seed["median"]) / (MAD_TO_SD * max(seed["mad"], lo)))
     return robust_z(hist, now, floor)
 
 

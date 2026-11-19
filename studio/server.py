@@ -1231,11 +1231,13 @@ def get_behavior(cid: str):
 def put_behavior(cid: str, body: dict = Body(...)):
     if not creators.get(cid):
         raise HTTPException(404, "No such creator")
+    _throttle("cedit:" + ctx.uid(), 60, 600)
     text = body.get("text")
     if not isinstance(text, str):
         raise HTTPException(400, "Send the profile as text.")
     text = memory.trim(re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", " ", text)[:8000])
-    memory.save(cid, text, memory.load(cid)[1])
+    memory.save(cid, text)
+    ctx.bump()
     return _behavior_view(cid)
 
 
@@ -1243,7 +1245,9 @@ def put_behavior(cid: str, body: dict = Body(...)):
 def reset_behavior(cid: str):
     if not creators.get(cid):
         raise HTTPException(404, "No such creator")
+    _throttle("cedit:" + ctx.uid(), 60, 600)
     memory.reset(cid)
+    ctx.bump()
     return _behavior_view(cid)
 
 

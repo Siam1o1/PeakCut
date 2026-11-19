@@ -459,7 +459,7 @@ Find moments where something clearly happened: a sudden jump in loudness (shouti
 {chat_hint}a stretch that stays well above normal. Ignore steady background noise or music that is loud the whole time.
 Return up to 3 moments with start and end (seconds), score 0-100 for how strong the reaction is, and a short reason.
 Return [] if nothing stands out. Most stretches have nothing.
-
+{profile}
 Signals from second {start:.0f} to {now:.0f}:
 {lines}
 """
@@ -514,7 +514,7 @@ def judge_signals(z, chat, start, now, unit="messages", timeout=None, profile=""
         chat_note=f"\nC={word} in that slice (usual is about {avg:.1f})." if has_chat else
         "\nChat is not available for this stream.",
         chat_hint=f"a burst of {word} right after something happened, " if has_chat else "",
-        start=start, now=now, lines="\n".join(rows)) + (profile or "")
+        start=start, now=now, lines="\n".join(rows), profile=profile or "")
     out, _model, spent = ask_ai(prompt, SIG_SCHEMA, purpose="Live: reaction judge", timeout=timeout)
     moments = [{"start": float(m["start"]), "end": float(m["end"]), "score": int(m.get("score", 0)),
                 "reason": str(m.get("reason", ""))} for m in out if isinstance(m, dict)]
