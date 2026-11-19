@@ -181,7 +181,7 @@ class Session:
         self.facecam_checked = False  # the look is made once, even when it finds nothing
         self.ai_busy = 0.0            # when the AI check now running was started, 0 when none is
 
-    def _ask_ai(self, window=None, why=None, score=None, peak=None):
+    def _ask_ai(self, window=None, why=None, score=None, peak=None, cand=None):
         """Ask the AI on its own thread, so a slow answer never stops the recording.
 
         While the AI thinks, the speech keeps being written and a "clip that" still works. One check
@@ -193,7 +193,7 @@ class Session:
 
         def work():
             try:
-                self._ai_check(window, why, score, peak)
+                self._ai_check(window, why, score, peak, cand)
             except Exception as e:  # noqa: BLE001
                 self.job["ai"]["last_error"] = str(e)[-200:]
             finally:
@@ -328,35 +328,49 @@ class Session:
                 if not self.spike:
                     b = self.viewer_queue.pop(0)
                     self.spike = {"t": float(b["t"]), "why": f"Viewers clipped this ({b['people']} people)",
-                                  "z": 10 + b["people"], "viewer_clips": b["people"]}
+                                  "z": 10 + b["people"], "viewer_clips": b["people"],
+                                  "sig": {"loud": self.zs["loud"], "chat": self.zs["chat"]}}
                     self.spikes += 1
 
     def _flush_viewer_points(self):
         """List the viewer bursts whose clip edges are settled, or all of them once the stream has ended or Stop was
         pressed (with the best edges known by then), so that nothing waiting is lost."""
-        for b in list(self.viewer_points):
+        with self.lock:                  # the viewer poller adds to this list while the analysis thread empties it
+            waiting = list(self.viewer_points)
+        for b in waiting:
             ready, start, end = self._settled(b["t"])
             if ready or self.ended or self.user_stopped:
-                self.viewer_points.remove(b)
+                with self.lock:
+                    if b not in self.viewer_points:
+                        continue
+                    self.viewer_points.remove(b)
                 p = picks.add_point(self, {"start": start, "end": end, "peak": b["t"], "score": 0,
-                                           "reason": f"Viewers clipped this ({b['people']} people)", "from": "viewers"})
+                                           "reason": f"Viewers clipped this ({b['people']} people)", "from": "viewers",
+                                           "cand": b.get("cand")})
                 if p is None:      # the same moment was listed already (by the AI or a jump): note the viewers on it
+                    marked = False
                     with self.lock:
                         for q in self.job["points"]:
                             if abs(q["t"] - b["t"]) < 10:
                                 q["viewers"] = max(int(q.get("viewers") or 0), int(b["people"]))
+                                marked = True
                                 break
+                    if marked:
+                        jobs.save(self.job)      # outside the lock, like every other save
                     ctx.bump()
 
     def _viewer_burst(self, b):
         why = f"Viewers clipped this ({b['people']} people)"
         if self.pick:      # like a mark made by hand: always listed
+            sp = {"t": b["t"], "viewer_clips": b["people"]}
+            b["cand"] = self._candidate(sp)      # a made-by-hand style point skips the AI, so it is logged as not sent
             if self._timing():     # listed once its start and end are settled, see _flush_viewer_points
-                self.viewer_points.append(b)
+                with self.lock:
+                    self.viewer_points.append(b)
                 self._flush_viewer_points()
             else:
                 picks.add_point(self, {"start": max(0.0, b["t"] - 30), "end": b["t"] + 10, "peak": b["t"], "score": 0,
-                                       "reason": why, "from": "viewers"})
+                                       "reason": why, "from": "viewers", "cand": b["cand"]})
         else:              # sent to the AI like a jump, and strong enough to rank high; waits if another jump is pending
             self.viewer_queue.append(b)
             self._flush_viewer_queue()
@@ -548,7 +562,8 @@ class Session:
             why = f"Chat: {said} people said {w['top'][:25].upper()}" + (f" ({w['top_kind']})" if w["top_kind"] else "")
             strength = w["convergence"]
         if why and not self.spike and end - self.last_spike >= self.AUTO_GAP:
-            self.spike = {"t": max(0.0, float(end - 3) - self._shift()), "why": why, "z": jz + 2 * strength, "chat": w}
+            self.spike = {"t": max(0.0, float(end - 3) - self._shift()), "why": why, "z": jz + 2 * strength, "chat": w,
+                          "sig": {"loud": self.zs["loud"], "chat": self.zs["chat"]}}
             self.last_spike = end
             self.spikes += 1
 
@@ -719,7 +734,7 @@ class Session:
         if why and not self.spike and n - self.last_spike >= self.AUTO_GAP:
             chat_only = zc >= jz and zl < jz      # only a reaction in chat: the streamer did it a few seconds earlier
             self.spike = {"t": max(0.0, float(n - 3) - (self._shift() if chat_only else 0)), "why": ", ".join(why),
-                          "z": max(zl, zc)}
+                          "z": max(zl, zc), "sig": {"loud": zl, "chat": zc}}
             self.last_spike = n
             self.spikes += 1
 
@@ -780,7 +795,7 @@ class Session:
         return signals.clip_edges(t, brain.make_lines(words), float(st["min_len"]), float(st["max_len"]),
                                   self._calm_after(t))
 
-    def _ai_check(self, window=None, why=None, score=None, peak=None):
+    def _ai_check(self, window=None, why=None, score=None, peak=None, cand=None):
         """Judge 1 reads only the words. If it finds a moment, judge 2 reads only the loudness and chat activity
         for the same stretch, without seeing the words. A clip is made when both say yes (or as set in Setup)."""
         st = self.settings
@@ -797,7 +812,7 @@ class Session:
         recent = [c for c in prev if c.get("score", 0) > 0 and time.time() - c.get("made_at", 0) < 3600]
         last_clip = max((c.get("made_at", 0) for c in prev), default=self.started_at)
         must = st["must_clip_min"] > 0 and time.time() - last_clip >= st["must_clip_min"] * 60
-        verdict = {"t": round(now), "transcript": None, "reaction": None, "trigger": why}
+        verdict = {"t": round(now), "transcript": None, "reaction": None, "trigger": why, "cand": cand}
         if len(win) < 8:
             self.skipped += 1
             return self._verdict(verdict, "Skipped: nobody talking")
@@ -825,7 +840,7 @@ class Session:
                     a, b = self._edges(peak)
                     t = peak
                 picks.add_point(self, {"start": a, "end": b, "peak": max(a, t), "score": 0, "reason": why or "",
-                                       "from": "jump" if jump else "said"})
+                                       "from": "jump" if jump else "said", "cand": cand})
             return self._verdict(verdict, "AI error: " + str(e)[-80:])
         self.checks += 1
         self.tokens += tok
@@ -867,6 +882,8 @@ class Session:
                                                      st["decide_mode"] == "either" else "Forced: no clip for a while")
             c["judges"] = {"words": c["score"], "reaction": rs or None, "why": why}
             c["reason"] = f"{c['reason']} ({why.lower()}.)"
+            if cand:
+                c["cand"] = cand
             c["from"] = "viewers" if "Viewers clipped" in (trigger or "") else "jump" if (trigger or "").startswith("Jump") else "said" if trigger else "ai"
             if self._add_clip(c) is None:       # pick mode: this moment is already in the list
                 self._verdict(verdict, "Already in the list")
@@ -878,8 +895,45 @@ class Session:
                 break
 
     def _verdict(self, v, result):
+        v = dict(v)
+        cand = v.pop("cand", None)
         self.verdicts.append(dict(v, result=result))
         del self.verdicts[:-6]
+        if cand:           # what happened to this candidate, for the log (short labels and numbers only)
+            sent = not result.startswith(("Skipped", "Passed over"))
+            signals.note(self._log(), cand, sent=sent, result=result[:signals.MAX_TEXT], words=v.get("transcript"),
+                         reaction=v.get("reaction"))
+
+    def _log(self):
+        try:
+            return signals.log_for(self.job.get("creator"))
+        except Exception:  # noqa: BLE001
+            return None
+
+    def _candidate(self, sp):
+        """Score a jump with everything known about it, put that score on it (`score`, used to rank the strongest
+        moments of the hour) and write it to the log. Returns the candidate's id, or None when the log is off.
+        Only numbers and short labels are logged: never what chat said."""
+        sig = sp.get("sig") or {}
+        v = {"loud": sig.get("loud", self.zs["loud"]), "chat": sig.get("chat", self.zs["chat"]),
+             "viewer_clips": sp.get("viewer_clips") or 0}
+        w = sp.get("chat")
+        if w:
+            v.update(convergence=w["convergence"], clip_requests=w["clip_people"],
+                     reactions=min(w["people"], sum(w["types"].values())))
+        fused = signals.fuse(v, self.settings.get("sig_weights"))
+        sp["score"] = max(fused, 80) if v["viewer_clips"] >= 3 else fused     # viewers' clips always rank high
+        kind = "viewers" if v["viewer_clips"] else (w.get("top_kind") or "chat") if w else ("loud" if v["loud"] >= v["chat"] else "chat")
+        log = self._log()
+        if log is None:
+            return None
+        try:
+            sp["cand"] = log.add({"job": str(self.job.get("id") or "")[:40], "t": round(time.time()), "at": round(sp["t"]),
+                                  "values": {k: round(float(x), 2) for k, x in v.items()}, "score": fused,
+                                  "rank": sp["score"], "sent": False, "kind": kind[:40]})
+        except Exception:  # noqa: BLE001
+            return None
+        return sp["cand"]
 
     CLIP_WORDS = re.compile(r"\bclip(\s+(it|that|this))?\b", re.I)
     SAID_BEFORE, SAID_AFTER, SAID_GAP = 60, 15, 45
@@ -1080,11 +1134,12 @@ class Session:
                 # the usual gap between jumps (AUTO_GAP), so a waiting one is never replaced.
                 elif sp and (self._settled(sp["t"])[0] or (self.ended and not busy)):
                     self.spike = None
+                    cand = self._candidate(sp)
                     if self._timing():
                         a, b = self._edges(sp["t"])
-                        self._ask_ai((a - 10, b + 5), "Jump: " + sp["why"], sp.get("z"), peak=sp["t"])
+                        self._ask_ai((a - 10, b + 5), "Jump: " + sp["why"], sp["score"], peak=sp["t"], cand=cand)
                     else:
-                        self._ask_ai((sp["t"] - self.AUTO_BEFORE, sp["t"] + self.AUTO_AFTER), "Jump: " + sp["why"], sp.get("z"))
+                        self._ask_ai((sp["t"] - self.AUTO_BEFORE, sp["t"] + self.AUTO_AFTER), "Jump: " + sp["why"], sp["score"], cand=cand)
                 elif self.t_done - self.last_check >= every * 60 or (self.ended and not busy and self.t_done > self.last_check):
                     self._ask_ai()
                 self._publish()
@@ -1095,7 +1150,9 @@ class Session:
             # well as at the end of a stream, so both wait for it. Stopping is still instant on the page:
             # stop() has already written the status. In the Live Transcriber, a moment whose stretch of
             # stream is not saved yet holds the session open the same way, so pressing Stop never loses it.
-            holds = self.pick and (bool(picks.waiting(self)) or bool(self.viewer_points))
+            with self.lock:
+                pending_viewers = bool(self.viewer_points)
+            holds = self.pick and (bool(picks.waiting(self)) or pending_viewers)
             if ((self.user_stopped and not self.manual and not self.ai_busy and not holds)
                     or (self.ended and not busy and not self.ai_busy and not holds
                         and len(self.pending) < SR * 2 and not self.manual)):

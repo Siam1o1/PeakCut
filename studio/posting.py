@@ -6,7 +6,7 @@ from pathlib import Path
 
 import json
 
-from . import accounts, alerts, config, creators, ctx, jobs, live
+from . import accounts, alerts, config, creators, ctx, jobs, live, signals
 
 _lock = threading.RLock()
 _FILE = config.DATA_DIR / "posts.json"
@@ -79,7 +79,7 @@ def enqueue(job, clip, account_ids, now=False) -> list:
             p = {"id": secrets.token_hex(8), "user": ctx.uid(), "job": job["id"], "clip": clip["id"], "creator": job["creator"],
                  "account": aid, "account_name": acc["name"], "platform": acc["platform"], "status": "scheduled",
                  "due_at": due, "created": time.time(), "title": clip.get("title") or clip.get("hook") or "Clip",
-                 "score": clip.get("score", 0), "tries": 0, "url": "", "remote_id": "", "error": None, "views": None}
+                 "score": clip.get("score", 0), "cand": clip.get("cand") or "", "tries": 0, "url": "", "remote_id": "", "error": None, "views": None}
             _posts.append(p)
             made.append(p)
         _save()
@@ -127,6 +127,7 @@ def _post(p):
             raise RuntimeError("That kind of account is no longer supported.")
         p.update(status="posted", posted_at=time.time(), remote_id=rid, url=url, error=None)
         creators.log(p["creator"], f"Posted to {acc['name']}: {title}")
+        signals.note_for(p["creator"], p.get("cand"), posted=True, post_id=str(rid)[:40])
     except Exception as e:  # noqa: BLE001
         p["tries"] += 1
         p["error"] = str(e)[-300:]
@@ -158,6 +159,13 @@ def _run():
                 pass
 
 
+def _set_views(p, n):
+    """Keep the new view count, and tell the learning log when it changed."""
+    if n != p.get("views"):
+        p["views"] = n
+        signals.note_for(p.get("creator"), p.get("cand"), views=n)
+
+
 def _stats_for(recent):
     for aid in {p["account"] for p in recent if p["platform"] == "youtube"}:
         acc = accounts.get(aid)
@@ -165,13 +173,13 @@ def _stats_for(recent):
             views = accounts.youtube_views(acc, [p["remote_id"] for p in recent if p["account"] == aid])
             for p in recent:
                 if p["account"] == aid and p["remote_id"] in views:
-                    p["views"] = views[p["remote_id"]]
+                    _set_views(p, views[p["remote_id"]])
     for p in recent:
         acc = accounts.get(p["account"]) if p["platform"] == "instagram" else None
         if acc:
             v = accounts.instagram_views(acc, p["remote_id"])
             if v is not None:
-                p["views"] = v
+                _set_views(p, v)
 
 
 def _stats():

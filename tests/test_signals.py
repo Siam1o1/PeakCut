@@ -407,4 +407,104 @@ vm.job["points"] = [{"id": "pt1", "t": 98.0, "from": "jump", "start": 80, "end":
 vm._viewer_burst({"t": 101, "people": 4})
 check("a viewer point merged into an existing one marks it", (len(vm.job["points"]), vm.job["points"][0]["viewers"], vm.job["points"][0]["from"]), (1, 4, "jump"))
 
+# ---- one fused score, and the log
+check("fuse: loudness z 6 alone", signals.fuse({"loud": 6}), round(100 * 1 / 6.5))
+check("fuse: nothing known is 0", signals.fuse({}), 0)
+check("fuse: more of everything is 100", signals.fuse({"loud": 9, "chat": 9, "convergence": 1, "reactions": 9, "clip_requests": 9, "viewer_clips": 9}), 100)
+check("fuse: weights change the result", signals.fuse({"loud": 6}, {"loud": 3}) > signals.fuse({"loud": 6}), True)
+check("fuse: a weight of 0 leaves a signal out", signals.fuse({"loud": 6, "chat": 6}, {"chat": 0}),
+      round(100 / 5.5))
+check("fuse: viewer clips count for a lot", signals.fuse({"viewer_clips": 3}) > signals.fuse({"clip_requests": 3}), True)
+lg = signals.Log(os.path.join(os.environ["PEAKCUT_DATA"], "x", "signals.jsonl"))
+cid = lg.add({"job": "j1", "values": {"loud": 4.2}, "score": 55, "sent": False, "kind": "loud"})
+lg.update(cid, sent=True, verdict="Clipped: both judges agreed")
+lg.update(cid, downloaded=True)
+got = lg.read()[cid]
+check("log: add, update, read folds in order", (got["score"], got["sent"], got["downloaded"], got["values"]["loud"]), (55, True, True, 4.2))
+check("log: one line per call", len(open(lg.path, encoding="utf-8").read().splitlines()), 3)
+try:
+    lg.add({"job": "j1", "values": {}, "score": 1, "sent": False, "top": "x" * 41}); refused = False
+except ValueError:
+    refused = True
+check("log: a text longer than 40 characters is refused", refused, True)
+try:
+    lg.update(cid, verdict="y" * 41); refused = False
+except ValueError:
+    refused = True
+check("log: an update with long text is refused too", refused, True)
+check("log: a refused line is not written", len(open(lg.path, encoding="utf-8").read().splitlines()), 3)
+check("log_for: no creator, no log", signals.log_for(""), None)
+from studio import ctx
+ctx._uid.set("0123456789abcdef0123456789abcdef")
+cr = creators.create({"name": "LogTest"})
+check("log_for: on by default", isinstance(signals.log_for(cr["id"]), signals.Log), True)
+check("log_for: the file sits in the creator's folder", str(signals.log_for(cr["id"]).path).endswith("signals.jsonl") and cr["id"] in str(signals.log_for(cr["id"]).path), True)
+creators.update(cr["id"], {"sig_log": False})
+check("log_for: off when the setting is off", signals.log_for(cr["id"]), None)
+check("sig_weights keeps known keys and clips to 0-10", creators._clean({"sig_weights": {"loud": "3", "chat": 99, "nope": 1, "reactions": "x"}})["sig_weights"], {"loud": 3.0, "chat": 10.0})
+check("sig_log is a yes or no", creators._clean({"sig_log": 0})["sig_log"], False)
+check("the log is on by default", creators.DEFAULTS["sig_log"], True)
+
+# ---- the session scores, logs and carries the candidate id
+lp = os.path.join(os.environ["PEAKCUT_DATA"], "sess", "signals.jsonl")
+class FakeLog(signals.Log): pass
+def logged(**st):
+    x = session(**st); x.log = signals.Log(lp + str(id(x))); x._log = lambda x=x: x.log
+    return x
+lx = logged(live_per_hour=1)
+lx.zs = {"loud": 6.0, "chat": 0.0}
+sp = {"t": 100.0, "why": "loudness z 6.0", "z": 6.0, "sig": {"loud": 6.0, "chat": 0.0}}
+cand = lx._candidate(sp)
+rec = lx.log.read()[cand]
+check("a candidate is logged with its fused score", (rec["score"], rec["values"]["loud"], rec["sent"]), (signals.fuse({"loud": 6.0}), 6.0, False))
+check("the candidate id is kept on the spike", sp["cand"], cand)
+lx._verdict({"t": 1, "cand": cand}, "Passed over: stronger moments this hour")
+check("a passed-over candidate is marked not sent, with the reason", (lx.log.read()[cand]["sent"], lx.log.read()[cand]["result"]), (False, "Passed over: stronger moments this hour"))
+lx._verdict({"t": 1, "cand": cand, "transcript": 88, "reaction": 70}, "Clipped: both judges agreed")
+r2 = lx.log.read()[cand]
+check("the judges' verdict is added", (r2["sent"], r2["words"], r2["reaction"]), (True, 88, 70))
+lx._verdict({"t": 1, "cand": cand}, "AI error: " + "e" * 80)
+check("a long error label is cut to fit", len(lx.log.read()[cand]["result"]) <= 40, True)
+chatsp = {"t": 50.0, "why": "Chat", "z": 5.0, "chat": {"people": 9, "convergence": 0.7, "top": "x" * 60, "top_kind": "hype",
+          "types": {"laugh": 0, "shock": 1, "hype": 6, "clip": 4, "negative": 0}, "clip_people": 4}}
+cc = lx._candidate(chatsp)
+rc = lx.log.read()[cc]
+check("chat window numbers are logged, never the word", (rc["values"]["convergence"], rc["values"]["clip_requests"], "x" * 60 in open(lx.log.path, encoding="utf-8").read()), (0.7, 4, False))
+check("the kind label is short", rc.get("kind"), "hype")
+lw = logged(sig_weights={"loud": 0, "chat": 0, "convergence": 0, "reactions": 0, "clip_requests": 0, "viewer_clips": 1})
+vsp = {"t": 5.0, "why": "v", "z": 13, "viewer_clips": 3}
+wc = lw._candidate(vsp)
+check("the creator's weights are used", lw.log.read()[wc]["score"], 100)
+lh = logged(); lh.pick = True; lh.words = []; lh.ended = True; lh.job["points"] = []
+lh._viewer_burst({"t": 101, "people": 3})
+check("a viewer point made in pick mode carries its candidate", bool(lh.job["points"]) and lh.job["points"][0].get("cand") in lh.log.read(), True)
+lm = logged(); lm.pick = True; lm.ended = True
+lm.job["points"] = [{"id": "pt1", "t": 98.0, "from": "jump", "start": 80, "end": 120}]
+saved = []
+live.jobs.save = lambda j, _s=saved: _s.append(1)
+lm._viewer_burst({"t": 101, "people": 4})
+check("marking an existing point with viewers saves the job", len(saved) >= 1, True)
+
+# ---- outcomes reach the log
+from studio import picks
+lq = logged()
+cid2 = lq._candidate({"t": 5.0, "why": "x", "z": 5.0, "sig": {"loud": 5.0}})
+check("note() writes an update", (signals.note(lq.log, cid2, downloaded=True), lq.log.read()[cid2]["downloaded"]), (None, True))
+check("note() with no candidate or no log does nothing", (signals.note(None, "a", x=1), signals.note(lq.log, "", x=1)), (None, None))
+
+from studio import posting
+seen = []
+signals.note_for = lambda cr, cand, **f: seen.append((cr, cand, f))
+pp = {"creator": "c1", "cand": "abc", "views": None}
+posting._set_views(pp, 12); posting._set_views(pp, 12); posting._set_views(pp, 30)
+check("views are logged once per change", seen, [("c1", "abc", {"views": 12}), ("c1", "abc", {"views": 30})])
+
+from studio import picks
+seen.clear()
+jb = {"id": "jx", "creator": "c9", "dir": tempfile.mkdtemp(), "points": [{"id": "pt1", "t": 100.0, "score": 0, "reason": "", "cand": "cc1",
+      "hold": {"status": "ready", "file": "points/pt1.mp4", "from": 40.0, "to": 160.0, "error": None}}], "cuts": []}
+live.jobs.submit_live = lambda f: None
+picks.make_cut(jb, "pt1", 10, 30)
+check("making a cut logs it as downloaded", seen, [("c9", "cc1", {"downloaded": True})])
+
 print("ALL PASSED" if not fails else f"{len(fails)} failed"); sys.exit(1 if fails else 0)

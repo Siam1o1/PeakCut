@@ -1917,6 +1917,9 @@ function drawCreatorForm() {
         <label class="sw span"><input type="checkbox" data-k="sig_chat_words" ${c.sig_chat_words === false ? "" : "checked"}><span>Read what chat says<small>A crowd sending the same word or emote, or several people asking for a clip, counts as a jump. Bots, copied messages and raids are ignored.</small></span></label>
         <label class="sw span"><input type="checkbox" data-k="sig_viewer_clips" ${c.sig_viewer_clips === false ? "" : "checked"}><span>Use viewers' Twitch clips<small>Needs TWITCH_CLIENT_ID and TWITCH_CLIENT_SECRET in .env</small></span></label>
         <label class="sw span"><input type="checkbox" data-k="sig_timing" ${c.sig_timing === false ? "" : "checked"}><span>Smart clip edges<small>Start a clip at the sentence that sets it up and end it when chat has calmed down, and allow for the seconds chat takes to react</small></span></label>
+        <label class="sw span"><input type="checkbox" data-k="sig_log" ${c.sig_log === false ? "" : "checked"}><span>Keep a log for learning<small>Write down each candidate moment's numbers and what happened to it (sent to the AI, its verdict, downloaded, edited, posted, views). Numbers and short labels only, never what chat said. Only used for learning later.</small></span></label>
+        ${[["loud","Loudness",1],["chat","Chat activity",1],["convergence","Chat agreeing",1],["reactions","Reactions",0.5],["clip_requests","Clip requests",1],["viewer_clips","Viewers' clips",2]].map(([k, n, d]) => `<label class="f">Weight: ${n}<input data-w="${k}" type="number" step="0.5" min="0" max="10" value="${(c.sig_weights || {})[k] ?? d}"></label>`).join("")}
+        <small class="sub span" style="font-weight:400">How much each sign counts toward a moment's score from 0 to 100. When the hour's strongest moments are already taken, a lower-scoring one is not sent to the AI. 0 leaves a sign out.</small>
         <label class="f">Chat window (seconds)<input data-k="chat_window" type="number" min="5" max="10" value="${c.chat_window ?? 8}"></label>
         <label class="f">Laugh words<input data-k="words_laugh" value="${esc(c.words_laugh || "")}" placeholder="${esc(DEFAULT_WORDS.laugh)}"></label>
         <label class="f">Shock words<input data-k="words_shock" value="${esc(c.words_shock || "")}" placeholder="${esc(DEFAULT_WORDS.shock)}"></label>
@@ -1946,7 +1949,7 @@ function drawCreatorForm() {
       <button class="btn danger" data-act="delcreator">${ic("trash")}Delete creator</button></div>
     <div class="savebar" id="savebar"><span>${ic("warn")}You have unsaved changes</span><button class="btn ghost" data-act="cdiscard">Discard</button><button class="btn primary" data-act="csave">${ic("check")}Save changes</button></div>`;
 }
-const creatorForm = () => { const d = {}; $$("#cform [data-k]").forEach(i => { if (i.type === "radio") { if (i.checked) d[i.dataset.k] = i.value; } else d[i.dataset.k] = i.type === "checkbox" ? i.checked : i.value; }); d.accounts = $$("#cform [data-acc]:checked").map(i => i.value); return d; };
+const creatorForm = () => { const d = {}; $$("#cform [data-k]").forEach(i => { if (i.type === "radio") { if (i.checked) d[i.dataset.k] = i.value; } else d[i.dataset.k] = i.type === "checkbox" ? i.checked : i.value; }); d.accounts = $$("#cform [data-acc]:checked").map(i => i.value); d.sig_weights = {}; $$("#cform [data-w]").forEach(i => { if (i.value !== "") d.sig_weights[i.dataset.w] = Number(i.value); }); return d; };
 const dirty = on => $("#savebar")?.classList.toggle("on", on);
 async function saveCreator(quiet) {
   try { await send(`/api/creators/${creatorId()}`, creatorForm(), "PUT"); dirty(false); if (!quiet) toast("Saved", "ok"); await tick(); return true; }

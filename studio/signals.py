@@ -1,7 +1,12 @@
 """The maths behind finding moments in a live stream. Nothing here reads files or the network, so every part can be
 tested on its own. live.py feeds it what it hears and sees; it answers with numbers."""
+import json
 import re
+import threading
+import time
 import unicodedata
+import uuid
+from pathlib import Path
 
 import numpy as np
 
@@ -220,3 +225,129 @@ def clip_edges(peak, lines, min_len, max_len, calm_after=None, lead_min=3):
     if end - start < min_len:
         end = start + min_len                  # too short: run on longer (the start is already at its sentence or 0)
     return round(start, 2), round(end, 2)
+
+
+# ---------------------------------------------------------------- one score
+DEFAULT_WEIGHTS = {"loud": 1.0, "chat": 1.0, "convergence": 1.0, "reactions": 0.5, "clip_requests": 1.0, "viewer_clips": 2.0}
+_SCALE = {"loud": 6.0, "chat": 6.0, "convergence": 1.0, "reactions": 5.0, "clip_requests": 3.0, "viewer_clips": 3.0}
+
+
+def fuse(values, weights=None) -> int:
+    """All the signs a moment has, as one number from 0 to 100. Each sign is first scaled to 0..1 (a z-score of 6 or
+    more is full, five people with a reaction, three asking for a clip, three viewer clips), then the creator's
+    weights are used to average them. A sign that is not known counts as nothing, not as missing."""
+    w = dict(DEFAULT_WEIGHTS)
+    for k, v in (weights or {}).items():
+        if k in w:
+            try:
+                w[k] = max(0.0, float(v))
+            except (TypeError, ValueError):
+                pass
+    total = sum(w.values())
+    if total <= 0:
+        return 0
+    got = 0.0
+    for k, weight in w.items():
+        try:
+            x = float((values or {}).get(k) or 0.0) / _SCALE[k]
+        except (TypeError, ValueError):
+            x = 0.0
+        if x != x:
+            x = 0.0
+        got += weight * min(1.0, max(0.0, x))
+    return int(round(100 * got / total))
+
+
+# ---------------------------------------------------------------- the log
+MAX_TEXT = 40
+_log_lock = threading.Lock()
+
+
+def _check_short(x):
+    """Only numbers and short labels may be written: no chat text can slip into the log."""
+    if isinstance(x, str):
+        if len(x) > MAX_TEXT:
+            raise ValueError(f"The log only keeps short labels (up to {MAX_TEXT} characters).")
+    elif isinstance(x, dict):
+        for k, v in x.items():
+            _check_short(str(k)); _check_short(v)
+    elif isinstance(x, (list, tuple)):
+        for v in x:
+            _check_short(v)
+
+
+class Log:
+    """One JSON line for each candidate moment, and one more line for each thing that happened to it later."""
+
+    def __init__(self, path):
+        self.path = Path(path)
+
+    def _write(self, rec):
+        line = json.dumps(rec, separators=(",", ":"))
+        with _log_lock:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            with open(self.path, "a", encoding="utf-8") as f:
+                f.write(line + "\n")
+
+    def add(self, cand) -> str:
+        rec = dict(cand)
+        _check_short(rec)
+        rec["id"] = uuid.uuid4().hex[:12]
+        rec.setdefault("t", round(time.time()))
+        rec.setdefault("sent", False)
+        self._write(rec)
+        return rec["id"]
+
+    def update(self, cid, **fields):
+        _check_short(fields)
+        self._write({"id": cid, "update": fields, "at": round(time.time())})
+
+    def read(self) -> dict:
+        out = {}
+        try:
+            lines = self.path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            return out
+        for line in lines:
+            try:
+                r = json.loads(line)
+            except ValueError:
+                continue
+            if "update" in r:
+                if r.get("id") in out:
+                    out[r["id"]].update(r["update"])
+            elif r.get("id"):
+                out[r["id"]] = r
+        return out
+
+
+def log_for(creator_id):
+    """The log of this creator's candidates, or None when it is switched off or there is no creator."""
+    if not creator_id:
+        return None
+    from . import creators
+    c = creators.get(creator_id)
+    if not c or c.get("sig_log") is False:
+        return None
+    return Log(creators.root(creator_id) / "signals.jsonl")
+
+
+def note(log, cand, **fields):
+    """Add what happened to a candidate. Does nothing without a log or a candidate, and never raises: learning
+    must not get in the way of making clips."""
+    if log is None or not cand:
+        return
+    try:
+        log.update(cand, **fields)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def note_for(creator_id, cand, **fields):
+    """The same, finding the creator's log first."""
+    if not cand:
+        return
+    try:
+        note(log_for(creator_id), cand, **fields)
+    except Exception:  # noqa: BLE001
+        pass

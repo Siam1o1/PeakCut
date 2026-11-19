@@ -6,7 +6,7 @@ import shutil
 import time
 from pathlib import Path
 
-from . import brain, creators, jobs, media, render, safe, usage
+from . import brain, creators, jobs, media, render, safe, signals, usage
 
 HOLD_BEFORE, HOLD_AFTER = 60.0, 60.0    # seconds of stream kept either side of a moment
 LEAD_DEFAULT, LEAD_MAX = 20.0, 60.0     # "seconds before": how far before the moment a clip starts
@@ -76,6 +76,8 @@ def add_point(s, c):
              "reason": str(c.get("reason") or "")[:300], "text": text[:600], "from": c.get("from") or "ai",
              "made_at": time.time(),
              "hold": {"status": "waiting", "file": None, "from": None, "to": None, "error": None}}
+        if c.get("cand"):
+            p["cand"] = str(c["cand"])[:40]       # the id of its line in the creator's learning log
         job["points"].append(p)
     jobs.save(job)
     return p
@@ -162,6 +164,7 @@ def make_cut(job, pid, lead, length):
                "file": None, "error": None, "made_at": time.time()}
         job.setdefault("cuts", []).append(cut)
     jobs.save(job)
+    signals.note_for(job.get("creator"), p.get("cand"), downloaded=True)
     jobs.submit_live(lambda: _encode_cut(job, p, cut))
     return cut
 
@@ -265,10 +268,13 @@ def edit_cut(job, cut_id, options):
     if job.get("creator") and str(options.get("res")) in ("720", "1080"):
         creators.remember_res(job["creator"], res)       # the person's choice, used for this creator from now on
     (Path(new["dir"]) / "words.json").write_text(json.dumps(words), encoding="utf-8")
+    signals.note_for(job.get("creator"), p.get("cand"), edited=True)
     clip = {"id": "clip001", "start": 0.0, "end": round(meta["duration"], 2), "score": p["score"],
             "reason": p["reason"], "hook": hook, "title": new["source"]["name"], "description": "", "hashtags": [], "highlight_words": [],
             "category": "other", "style": style, "layout": layout, "res": res, "status": "queued", "version": 0,
             "made_at": time.time()}
+    if p.get("cand"):
+        clip["cand"] = p["cand"]
     if boxes:
         clip["split"] = boxes
     new["source"]["path"] = str(dest)
