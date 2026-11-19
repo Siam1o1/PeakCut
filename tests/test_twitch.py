@@ -70,31 +70,114 @@ def session(url="https://twitch.tv/somebody", **st):
     return live.Session({"title": "t", "uploader": "u", "dir": d, "creator": "", "ai": {}, "clips": [], "points": [],
                          "mode": st.get("mode", "auto"), "source": {"url": url, "name": "somebody"}}, s)
 
-se = session()
-check("no credentials: the poller does nothing and does not start", (se._poll_viewer_clips(), se.spike, se.viewer_clips), (False, None, {}))
+T = time.time()
+def ago(i, who, secs, dur=30, views=0):
+    return {"id": i, "creator_id": who, "created_at": iso(T - secs), "duration": dur, "view_count": views}
+def fake_server(clips):
+    """Like Twitch: only clips made since started_at, most viewed first, 100 a page with a cursor."""
+    seen = []
+    def g(url, params=None, headers=None, timeout=None, **kw):
+        if url.endswith("/users"): return R({"data": [{"id": "42"}]})
+        since = datetime.fromisoformat(params["started_at"].replace("Z", "+00:00")).timestamp()
+        seen.append(params["started_at"])
+        pool = sorted((c for c in clips if datetime.fromisoformat(c["created_at"].replace("Z", "+00:00")).timestamp() >= since),
+                      key=lambda c: -c["view_count"])
+        at = int(params.get("after") or 0)
+        page = pool[at:at + params["first"]]
+        more = at + params["first"] < len(pool)
+        return R({"data": page, "pagination": {"cursor": str(at + params["first"])} if more else {}})
+    return g, seen
+def live_session(**kw):
+    s = session(**kw); s.started_at = T - 1000; s.samples = 16000 * 1000; s.clock0 = T - 1000
+    return s
 
-# with a fake Helix: a burst becomes a strong spike once, and is not repeated
-se = session(); se.clock0 = c0
-CLIPS[:] = [clip("a", "u1", 100), clip("b", "u2", 120)]
+# no credentials: the guard itself is what stops it (the session is recording, so clock0 is set)
+se = live_session()
+check("no credentials: the poller does nothing", (se._poll_viewer_clips(), se.spike, se.viewer_clips), (False, None, {}))
+msgs = []
+creators.log = lambda cid, m: msgs.append(m)
+for _ in range(2):
+    x = live_session(); x.job["creator"] = "c1"; x.ended = True; x._watch_viewer_clips()
+check("the no-credentials line is written once per creator, not per recording", len(msgs), 1)
+
+# a burst becomes a strong spike once, growing with the people
+se = live_session()
+CLIPS[:] = [ago("a", "u1", 100), ago("b", "u2", 80), ago("c", "u3", 90)]
 se._helix = twitch.Helix("cid", "sec", get=get, post=post)
-check("a burst of viewers' clips sets a strong spike", (se._poll_viewer_clips(), bool(se.spike) and se.spike["z"], bool(se.spike) and se.spike["viewer_clips"]), (True, 10, 2))
-check("the spike says why", se.spike["why"], "Viewers clipped this (2 people)")
-first = se.spike; se.spike = None; se._poll_viewer_clips()
-check("the same clips do not make it again", se.spike, None)
-check("seen clips are kept", sorted(se.viewer_clips), ["a", "b"])
+check("a burst of viewers' clips sets a strong spike (10 plus the people)",
+      (se._poll_viewer_clips(), bool(se.spike) and se.spike["z"], bool(se.spike) and se.spike["viewer_clips"]), (True, 13, 3))
+check("the spike says why", se.spike["why"], "Viewers clipped this (3 people)")
+se.spike = None; se._poll_viewer_clips()
+check("the same clips do not make it again", (se.spike, sorted(se.viewer_clips)), (None, ["a", "b", "c"]))
+
+# a new burst right after a reported one is found
+se = live_session(); se._helix = twitch.Helix("cid", "sec", get=get, post=post)
+CLIPS[:] = [ago("a", "u1", 300), ago("b", "u2", 290)]
+se._poll_viewer_clips(); se.spike = None
+CLIPS[:] = [ago("a", "u1", 300), ago("b", "u2", 290), ago("c", "u3", 240), ago("d", "u4", 230)]
+se._poll_viewer_clips()
+check("A,B reported, then C,D 50 s later is a second burst", (bool(se.spike), se.spike and se.spike["viewer_clips"], se.viewer_used), (True, 2, {"a", "b", "c", "d"}))
+
+# a pending spike is not overwritten; the burst waits its turn
+se = live_session(); se._helix = twitch.Helix("cid", "sec", get=get, post=post)
+se.spike = {"t": 5.0, "why": "loudness"}
+CLIPS[:] = [ago("a", "u1", 100), ago("b", "u2", 80)]
+se._poll_viewer_clips()
+check("a pending spike stays and the burst waits", (se.spike["why"], len(se.viewer_queue)), ("loudness", 1))
+se.spike = None; se._flush_viewer_queue()
+check("then the burst is sent", (se.spike["why"], se.viewer_queue), ("Viewers clipped this (2 people)", []))
+
+# session seconds stand still in an outage: a clip still maps right
+se = live_session(); se.samples = 16000 * 970         # 30 s of the stream were never received
+se._helix = twitch.Helix("cid", "sec", get=get, post=post)
+CLIPS[:] = [ago("a", "u1", 100), ago("b", "u2", 100)]
+se._poll_viewer_clips()
+check("clip time follows the session clock, not the wall clock", abs(se.viewer_clips["a"]["end"] - 870) < 1.5, True)
+se.samples = 16000 * 1000; se.clock0 = None
+check("clock0 is re-anchored at each look", (se._poll_viewer_clips(), abs(se.clock0 - (time.time() - 1000)) < 2), (True, True))
+
+# busy channel: more than 100 old, much-viewed clips must not hide a new one
+old = [ago(f"o{i}", f"v{i}", 5000 + i, views=500 + i) for i in range(150)]
+g, seen = fake_server(old + [ago("n1", "u1", 60), ago("n2", "u2", 50)])
+se = live_session(); se._helix = twitch.Helix("cid", "sec", get=g, post=post)
+se._poll_viewer_clips()
+check("new clips are seen among 150 old popular ones", (sorted(se.viewer_clips), bool(se.spike)), (["n1", "n2"], True))
+check("only the last 10 minutes are asked for", datetime.fromisoformat(seen[0].replace("Z", "+00:00")).timestamp() >= T - 600 - 5, True)
+many = [ago(f"m{i}", f"v{i}", 200 + i, views=100 - i // 2) for i in range(130)]
+g, seen = fake_server(many)
+h2 = twitch.Helix("cid", "sec", get=g, post=post)
+check("more than a page is followed", len(h2.clips("42", T - 600)), 130)
+
+# a refused token is renewed once
+state = {"n": 0}
+def g401(url, params=None, headers=None, timeout=None, **kw):
+    state["n"] += 1
+    return R({}, 401) if state["n"] == 1 else R({"data": [{"id": "42"}]})
+calls["post"] = 0
+check("a 401 renews the token and tries once more", (twitch.Helix("cid", "sec", get=g401, post=post).user_id("x"), calls["post"]), ("42", 2))
+check("a 401 that stays gives nothing", twitch.Helix("cid", "sec", get=lambda *a, **k: R({}, 401), post=post).user_id("x"), None)
 
 # pick mode lists it straight away, like a hand mark
-sp = session(mode="pick"); sp.clock0 = c0; sp.samples = 16000 * 400
+sp = live_session(mode="pick"); sp.samples = 16000 * 400
 sp._helix = twitch.Helix("cid", "sec", get=get, post=post)
+CLIPS[:] = [ago("a", "u1", 100), ago("b", "u2", 80)]
 sp._poll_viewer_clips()
 check("pick mode lists it as from viewers", [p["from"] for p in sp.job["points"]], ["viewers"])
 
-# the first failure is logged once
-msgs = []
-creators.log = lambda cid, m: msgs.append(m)
-sf = session(); sf.clock0 = c0
-sf._helix = hb
+# failures are written once each
+msgs.clear()
+sf = live_session(); sf._helix = hb
 sf._poll_viewer_clips(); sf._poll_viewer_clips()
-check("the first failure writes one line", len(msgs), 1)
-check("no secret in the log", all("sec" not in m and "cid" not in m for m in msgs), True)
+check("a failing user lookup writes one line", len(msgs), 1)
+def get_clips_fail(url, params=None, headers=None, timeout=None, **kw):
+    return R({"data": [{"id": "42"}]}) if url.endswith("/users") else R({}, 500)
+msgs.clear()
+sc = live_session(); sc._helix = twitch.Helix("cid", "sec", get=get_clips_fail, post=post)
+sc._poll_viewer_clips(); sc._poll_viewer_clips()
+check("a failing clips call writes one line", len(msgs), 1)
+CLIPS[:] = []
+sn = live_session(); sn._helix = twitch.Helix("cid", "sec", get=get, post=post)
+msgs.clear(); sn._poll_viewer_clips()
+check("no clips is not an error", msgs, [])
+check("no secret in the log", all("sec" not in m and "cid" not in m for m in msgs + ["x"]), True)
 print("FAILED: " + ", ".join(fails) if fails else "ALL PASS"); sys.exit(1 if fails else 0)

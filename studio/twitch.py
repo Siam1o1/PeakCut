@@ -28,6 +28,7 @@ class Helix:
     def __init__(self, client_id, secret, get=httpx.get, post=httpx.post):
         self.client_id, self.secret, self.get, self.post = client_id, secret, get, post
         self.token, self.token_until = None, 0.0
+        self.ok = True              # whether the last clips call worked (an empty answer still counts as working)
 
     def _token(self):
         if self.token and time.time() < self.token_until:
@@ -40,16 +41,26 @@ class Helix:
         self.token_until = time.time() + max(60, int(j.get("expires_in", 3600)) - 120)   # renewed a little early
         return self.token
 
-    def _data(self, path, params):
-        """The 'data' list of an answer, or None on any problem. Nothing here is logged, so no secret can leak."""
+    def _call(self, path, params):
+        """The answer (a dict), or None on any problem. A refused token (401) is renewed and tried once more.
+        Nothing here is logged, so no secret can leak."""
         try:
-            headers = {"Client-Id": self.client_id, "Authorization": "Bearer " + self._token()}
-            r = self.get(f"{API}/{path}", params=params, headers=headers, timeout=TIMEOUT)
-            r.raise_for_status()
-            data = r.json().get("data")
-            return data if isinstance(data, list) else None
+            for again in (True, False):
+                headers = {"Client-Id": self.client_id, "Authorization": "Bearer " + self._token()}
+                r = self.get(f"{API}/{path}", params=params, headers=headers, timeout=TIMEOUT)
+                if r.status_code == 401 and again:
+                    self.token, self.token_until = None, 0.0
+                    continue
+                r.raise_for_status()
+                j = r.json()
+                return j if isinstance(j, dict) else None
         except Exception:  # noqa: BLE001
             return None
+
+    def _data(self, path, params):
+        j = self._call(path, params)
+        data = j.get("data") if j else None
+        return data if isinstance(data, list) else None
 
     def user_id(self, login):
         d = self._data("users", {"login": login})
@@ -60,10 +71,21 @@ class Helix:
         d = self._data("streams", {"user_id": user_id})
         return _unix(d[0].get("started_at")) if d else None
 
-    def clips(self, user_id, since):
+    def clips(self, user_id, since, pages=3):
         """Clips of this channel made after `since` (unix time): id, creator_id, created_at, duration."""
-        d = self._data("clips", {"broadcaster_id": user_id, "started_at": _rfc3339(since), "first": 100})
-        return [c for c in d if isinstance(c, dict)] if d else []
+        out, params = [], {"broadcaster_id": user_id, "started_at": _rfc3339(since), "first": 100}
+        self.ok = True
+        for _ in range(pages):      # Twitch lists the most viewed first, so a few pages are followed
+            j = self._call("clips", params)
+            if not j or not isinstance(j.get("data"), list):
+                self.ok = False
+                break
+            out += [c for c in j["data"] if isinstance(c, dict)]
+            cursor = (j.get("pagination") or {}).get("cursor")
+            if not cursor or len(j["data"]) < 100:
+                break
+            params = dict(params, after=cursor)
+        return out
 
 
 def clip_times(clips, clock0):

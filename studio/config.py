@@ -223,7 +223,7 @@ def smtp_password() -> str:
     return _secret("PEAKCUT_SMTP_PASSWORD", "PEAKCUT_SMTP_PASSWORD_FILE", r"\S{4,}")
 
 
-# ---------------------------------------------------------------- Google (sign in with Google, and connecting YouTube)
+# ---------------------------------------------------------------- Twitch (viewers' clips, optional)
 def twitch_app():
     """(client id, client secret) of a Twitch app, used only to read viewers' clips; None when not set up."""
     cid = _secret("TWITCH_CLIENT_ID", "TWITCH_CLIENT_ID_FILE", r"\S{6,}")
@@ -231,6 +231,7 @@ def twitch_app():
     return (cid, sec) if cid and sec else None
 
 
+# ---------------------------------------------------------------- Google (sign in with Google, and connecting YouTube)
 def google_client() -> tuple:
     """(client id, client secret). Either GOOGLE_CLIENT_ID/SECRET, or GOOGLE_CLIENT_FILE = the JSON Google lets you download."""
     return _keep("google", _read_google_client)

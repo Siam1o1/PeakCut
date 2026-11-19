@@ -26,6 +26,9 @@ CHAT_KEEP = 960      # seconds of chat names kept: the baseline reads the last 1
 SR = 16000
 
 
+_NO_TWITCH_TOLD = set()     # creators already told that Twitch credentials are missing
+
+
 class NotLive(Exception):
     pass
 
@@ -164,9 +167,10 @@ class Session:
         self.clock0 = None            # unix time the first audio arrived: viewers' clip times are counted from it
         self.viewer_clips = {}        # clip id -> its times, for the Twitch clips already seen
         self.viewer_used = set()      # clips already part of a burst that was reported
+        self.viewer_queue = []        # bursts waiting for the next free moment to be sent (clip mode)
         self._helix = None
         self._helix_user = None
-        self._helix_told = False
+        self._helix_told = set()
         self.top = signals.HourlyTop(settings.get("live_per_hour", 4))   # keeps the strongest moments of each hour
         self.zs = {"loud": 0.0, "chat": 0.0}   # how unusual loudness and chat are now, against the last 15 minutes
         self.game = ""                # which game this stream is, when it can be told
@@ -263,7 +267,9 @@ class Session:
     def _watch_viewer_clips(self):
         """Every 90 seconds, look at the clips viewers made of this channel. Does nothing without Twitch credentials."""
         if not config.twitch_app():
-            self._viewer_trouble("Viewers' clips skipped: no Twitch credentials in .env")
+            if self.job["creator"] not in _NO_TWITCH_TOLD:       # once per creator, not at every recording
+                _NO_TWITCH_TOLD.add(self.job["creator"])
+                creators.log(self.job["creator"], "Viewers' clips skipped: no Twitch credentials in .env")
             return
         while not self.stop_flag.is_set() and not self.ended:
             try:
@@ -272,15 +278,15 @@ class Session:
                 pass
             self.stop_flag.wait(90)
 
-    def _viewer_trouble(self, msg):
-        if not self._helix_told:               # said once, then quiet
-            self._helix_told = True
+    def _viewer_trouble(self, key, msg):
+        if key not in self._helix_told:        # each kind of trouble is said once per recording, then quiet
+            self._helix_told.add(key)
             creators.log(self.job["creator"], msg)
 
     def _poll_viewer_clips(self):
         """One look at the viewers' clips. A burst of clips from different people is a strong moment.
         True when it asked Twitch."""
-        if not self.clock0:
+        if not (self.clock0 or self.samples):
             return False
         if not self._helix:
             app = config.twitch_app()
@@ -293,27 +299,43 @@ class Session:
         if not self._helix_user:
             self._helix_user = self._helix.user_id(m.group(1).lower())
             if not self._helix_user:
-                self._viewer_trouble("Viewers' clips skipped: Twitch would not answer (check the credentials in .env)")
+                self._viewer_trouble("user", "Viewers' clips skipped: Twitch would not answer (check the credentials in .env)")
                 return True
-        got = self._helix.clips(self._helix_user, self.clock0 - 60)
+        now = time.time()
+        if self.samples:        # session seconds stand still while the stream is down, so re-anchor at every look
+            self.clock0 = now - self.samples / SR
+        # Twitch lists the most viewed clips first, so only a recent window is asked for: new clips are never cut off
+        got = self._helix.clips(self._helix_user, max(self.started_at - 60, now - 600))
+        if not self._helix.ok:
+            self._viewer_trouble("clips", "Viewers' clips: Twitch gave an error when asked for clips (will keep trying quietly)")
+            return True
         for t in twitch.clip_times(got, self.clock0):
-            if t["end"] > 0:
+            if t["end"] > 0 and t["id"] not in self.viewer_clips:      # the first mapping is kept
                 self.viewer_clips[t["id"]] = t
-        for b in twitch.bursts(list(self.viewer_clips.values())):
-            if self.viewer_used & set(b["ids"]):
-                continue
+        fresh = [t for i, t in self.viewer_clips.items() if i not in self.viewer_used]
+        for b in twitch.bursts(fresh):
             self.viewer_used |= set(b["ids"])
             self._viewer_burst(b)
         return True
+
+    def _flush_viewer_queue(self):
+        """Send a waiting burst to the AI once no other jump is waiting for its transcript."""
+        if self.viewer_queue:
+            with self.lock:
+                if not self.spike:
+                    b = self.viewer_queue.pop(0)
+                    self.spike = {"t": float(b["t"]), "why": f"Viewers clipped this ({b['people']} people)",
+                                  "z": 10 + b["people"], "viewer_clips": b["people"]}
+                    self.spikes += 1
 
     def _viewer_burst(self, b):
         why = f"Viewers clipped this ({b['people']} people)"
         if self.pick:      # like a mark made by hand: always listed
             picks.add_point(self, {"start": max(0.0, b["t"] - 30), "end": b["t"] + 10, "peak": b["t"], "score": 0,
                                    "reason": why, "from": "viewers"})
-        else:              # sent to the AI like a jump, and strong enough to rank high
-            self.spike = {"t": float(b["t"]), "why": why, "z": 10, "viewer_clips": b["people"]}
-            self.spikes += 1
+        else:              # sent to the AI like a jump, and strong enough to rank high; waits if another jump is pending
+            self.viewer_queue.append(b)
+            self._flush_viewer_queue()
 
     def stop(self, note="Stopped by you"):
         """Instant for the user: the card and the creator show as stopped straight away. Clips already being made
@@ -606,6 +628,7 @@ class Session:
         """Always on. Keep a running average of loudness and chat over the last three minutes (leaving out the
         last few seconds), and mark a moment when the last five seconds jump a set percentage above it. Nothing is
         sent yet: the AI gets that moment once its transcript is ready, with the half minute before it."""
+        self._flush_viewer_queue()
         if self._baseline():
             self._watch_spikes_z()
         else:
