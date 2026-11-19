@@ -143,6 +143,43 @@ with ctx.as_user(auth.LOCAL_ID):
 r = c.delete(f"/api/creators/{f2}", headers=H)
 check("a job already in the owner's folder is kept in place", (r.status_code, r.json().get("kept"), hj["dir"], (home_dir / "source.mp4").is_file(), hj["creator"]), (200, 1, str(home_dir), True, None))
 
+# ---- posts still waiting for a kept clip are cancelled, never uploaded
+from studio import accounts, posting
+g = new_creator("Scheduled")
+other_c = new_creator("Other Creator")
+with ctx.as_user(auth.LOCAL_ID):
+    gj = jobs.create({"type": "url", "url": "https://example.com/g", "name": "g"}, {}, enqueue=False, creator=g)
+    gj.update(status="done", clips=[{"id": "k1", "status": "done", "file": "k1.mp4"}]); jobs.save(gj)
+    mk = lambda pid, cr, st: {"id": pid, "user": auth.LOCAL_ID, "job": gj["id"], "clip": "k1", "creator": cr, "account": "a1",
+                              "account_name": "Chan", "platform": "youtube", "status": st, "due_at": time.time() + 3600,
+                              "tries": 0, "title": "t", "url": "", "error": None}
+    posting._posts.extend([mk("ps1", g, "scheduled"), mk("ps2", g, "posted"), mk("ps3", other_c, "scheduled")])
+uploads = []
+accounts.youtube_upload = lambda *a, **k: uploads.append(a) or ("x", "u")
+r = c.delete(f"/api/creators/{g}", headers=H)
+by = {p["id"]: p for p in posting._posts}
+check("a waiting post of the deleted creator is cancelled, others are left", (r.status_code, by["ps1"]["status"], by["ps2"]["status"], by["ps3"]["status"]),
+      (200, "cancelled", "posted", "scheduled"))
+check("their posts no longer name the creator", (by["ps1"]["creator"], by["ps2"]["creator"], by["ps3"]["creator"]), (None, None, other_c))
+check("the clip card shows the post as cancelled", gj["clips"][0]["posts"]["ps1"]["status"], "cancelled")
+check("the cancellation is saved to disk", '"cancelled"' in posting._FILE.read_text(encoding="utf-8"), True)
+check("nothing was uploaded", uploads, [])
+
+# ---- a refusal for some other busy video changes nothing: the recording keeps going
+h = new_creator("Busy Elsewhere")
+with ctx.as_user(auth.LOCAL_ID):
+    creators.update(h, {"auto_watch": True})
+    hl = jobs.create({"type": "live", "url": "https://www.twitch.tv/h", "name": "h live"}, {}, enqueue=False, creator=h, kind="live")
+    hl.update(mode="pick", points=[], cuts=[], status="live"); jobs.save(hl)
+    hs = live.Session(hl, creators.get(h)); live.SESSIONS[hl["id"]] = hs
+    ho = jobs.create({"type": "url", "url": "https://example.com/ho", "name": "ho"}, {}, enqueue=False, creator=h)
+    ho.update(status="done", clips=[{"id": "k", "status": "rendering"}]); jobs.save(ho)
+r = c.delete(f"/api/creators/{h}", headers=H)
+with ctx.as_user(auth.LOCAL_ID):
+    check("another busy video gives 409 before anything is stopped", (r.status_code, hs.user_stopped, creators.get(h)["auto_watch"], creators.get(h) is not None),
+          (409, False, True, True))
+live.SESSIONS.pop(hl["id"], None)
+
 # ---- 6: someone else's creator
 with ctx.as_user("u_other"):
     other = creators.create({"name": "Not Yours"})["id"]

@@ -2474,6 +2474,9 @@ document.addEventListener("change", async e => {
   if (t.id === "o_creator") {
     const toggle = $("#o_captions"), c = S.creators.find(c => c.id === t.value);
     if (!toggle.dataset.overridden) { toggle.checked = c?.captions !== false; syncCaptionStyle(toggle); }
+    const rs = c?.res == 720 ? 720 : 1080;           // the export size follows the chosen creator
+    $("#o_res").value = rs;
+    document.querySelectorAll('[data-seg="o_res"]').forEach(b => b.setAttribute("aria-pressed", String(b.dataset.v == rs)));
     return;
   }
   if (t.hasAttribute("data-caption-toggle")) {

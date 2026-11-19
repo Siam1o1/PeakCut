@@ -125,17 +125,18 @@ def _rehome(job, uid) -> None:
     old = Path(job["dir"])
     new = config.user_dir(uid) / "jobs" / old.name
     real = jobs._jobs.get(job["id"], job)             # the registered job itself, so the page and later renders see the move
-    if old.resolve() != new.resolve():                # already in the owner's own folder: nothing to move
-        if new.exists():
-            raise Busy("A folder with the same name already exists. Nothing was moved.")
-        new.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            os.replace(old, new)                      # a plain rename: never a slow copy that could be cut half-way
-        except OSError:
-            raise Busy("A file of this creator's is in use. Try again in a moment.")
     o, n = str(old), str(new)
     fix = lambda p: (n + p[len(o):]) if isinstance(p, str) and p.startswith(o) else p
-    with jobs._lock:
+    with jobs._lock:                                  # the move and the new paths change together
+        if old.resolve() != new.resolve():            # already in the owner's own folder: nothing to move
+            if new.exists():
+                raise Busy("A folder with the same name already exists. Nothing was moved.")
+            new.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                os.replace(old, new)                  # a plain rename: never a slow copy that could be cut half-way
+            except OSError:
+                raise Busy("A file of this creator's is in use. Try again in a moment. "
+                           "Videos moved so far are under All videos.")
         real["dir"] = n
         if real.get("source_path"):
             real["source_path"] = fix(real["source_path"])
@@ -151,14 +152,22 @@ def _rehome(job, uid) -> None:
 def delete_creator(cid: str, with_clips: bool = False) -> dict:
     """Remove a creator: their settings, posting rules, activity log and what PeakCut learned about them. Their
     videos and recordings are kept (moved to "No creator") unless with_clips is set. A recording of theirs is
-    stopped first."""
+    stopped first. Posts still waiting for a kept clip are cancelled, so nothing is posted under the old settings."""
     c = creators.get(cid)
     if not c:
         return {"ok": False}
+    uid = ctx.uid()
+
+    def live_session():
+        return next((x for x in live.SESSIONS.values()
+                     if x.job.get("creator") == cid and x.job.get("user") == uid and not x.finished), None)
+
+    s = live_session()
+    # a refusal for some other video must change nothing: the recording is left running and auto-record stays as it was
+    if any(_busy(j) for j in jobs.list_jobs() if j.get("creator") == cid and not (s and j["id"] == s.job["id"])):
+        raise Busy("One of this creator's videos is still being made. Wait for it to finish first.")
     if c.get("auto_watch"):
         creators.update(cid, {"auto_watch": False})      # the watcher must not start a new recording meanwhile
-    s = next((x for x in live.SESSIONS.values()
-              if x.job.get("creator") == cid and x.job.get("user") == ctx.uid() and not x.finished), None)
     if s:
         if s.user_stopped:                                # already asked to stop, and still wrapping up
             raise Busy("The recording is stopping. Try again in a moment.")
@@ -178,8 +187,23 @@ def delete_creator(cid: str, with_clips: bool = False) -> dict:
         if with_clips:
             jobs.delete(j["id"])
         else:
-            _rehome(j, ctx.uid())
+            _rehome(j, uid)
             kept += 1
+    if live_session():                                    # a recording began while the videos were being moved
+        raise Busy("The creator went live while it was being deleted. Try again in a moment.")
+    from . import posting
+    with posting._lock:                                   # kept clips must not be posted later with the old settings
+        touched = []
+        for p in posting._posts:
+            if p.get("user") == uid and p.get("creator") == cid:
+                if p.get("status") == "scheduled":
+                    p["status"] = "cancelled"
+                    p["error"] = "Cancelled because the creator was deleted."
+                p["creator"] = None
+                touched.append(p)
+        posting._save()
+    for p in touched:
+        posting._mirror(p)
     with creators._lock:
         creators._mine().pop(cid, None)
     shutil.rmtree(creators.root(cid), ignore_errors=True)

@@ -883,6 +883,9 @@ def _watch_one(c):
     """Start recording this auto-record creator if they are live on any of their channels."""
     from . import profiles
     try:
+        c = creators.get(c["id"])                     # the creator may have been deleted or switched off while waiting
+        if not c or not c.get("auto_watch"):
+            return
         if active_for(c["id"]) or len(active_mine()) >= config.MAX_LIVE_PER_USER or len(active()) >= config.MAX_LIVE_TOTAL or (active() and load.busy()):
             return
         # the chosen channel first, then their other platforms

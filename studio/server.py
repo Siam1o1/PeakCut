@@ -1001,7 +1001,9 @@ def delete_creator(cid: str, with_clips: int = 0):
         r = account.delete_creator(cid, with_clips=bool(with_clips))
     except account.Busy as e:
         raise HTTPException(409, str(e))
-    except ValueError:
+    except ValueError as e:
+        if str(e) != "bad creator id":
+            raise
         raise HTTPException(404, "No such creator")
     if not r.get("ok"):
         raise HTTPException(404, "No such creator")

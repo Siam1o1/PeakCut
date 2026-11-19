@@ -298,7 +298,7 @@ def create(source: dict, options: dict, enqueue=True, creator=None, kind="video"
     opts = {**base, **clean_options(options)}
     if opts["min_len"] >= opts["max_len"]:
         opts["min_len"] = max(5, opts["max_len"] - 5)
-    if creator and "res" in opts and "res" in clean_options(options):
+    if creator and str((options or {}).get("res")) in ("720", "1080"):
         creators.remember_res(creator, opts["res"])      # chosen in the options: remembered for next time
     job = {"id": jid, "user": ctx.uid(), "kind": kind, "creator": creator, "dir": str(d), "created": time.time(), "source": source,
            "options": opts, "status": "queued", "stage": "Waiting", "progress": 0.0,
@@ -371,7 +371,7 @@ def request_render(jid, cid, changes: dict):
         new["split"] = render.clean_split(changes["split"])
     if "res" in changes:
         new["res"] = clean_options({"res": changes["res"]}).get("res", 1080)
-        if job.get("creator"):                   # the person chose this size: the creator's next clips use it
+        if job.get("creator") and new["res"] != clip.get("res", 1080):    # only a size the person really changed is remembered
             creators.remember_res(job["creator"], new["res"])
     if new.get("style") not in render.STYLES:
         new["style"] = DEFAULTS["style"]

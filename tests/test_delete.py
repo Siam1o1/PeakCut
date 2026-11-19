@@ -44,6 +44,18 @@ with ctx.as_user(b.id):
     check("someone else cannot download my clips", ok)
     check("someone else cannot delete my creator", account.delete_creator(c["id"]) == {"ok": False})
 with ctx.as_user(a.id):
+    ck = creators.create({"name": "Keep Me"})
+    kj = video(ck["id"], n=1); kdir0 = kj["dir"]
+    r = account.delete_creator(ck["id"])
+    own = (config.user_dir(a.id) / "jobs").resolve()
+    check("keeping a creator's videos moves them into that user's own folder, still theirs",
+          r["ok"] and r["kept"] == 1 and Path(kj["dir"]).resolve().parent == own and Path(kj["dir"], "clips", "clip01.mp4").is_file()
+          and not Path(kdir0).exists() and jobs.get(kj["id"])["user"] == a.id and jobs.get(kj["id"])["creator"] is None and not creators.get(ck["id"]), str(r))
+    check("...and nobody else can see it", jobs.get(kj["id"]) is not None)
+with ctx.as_user(b.id):
+    check("...another user does not get it", jobs.get(kj["id"]) is None)
+with ctx.as_user(a.id):
+    jobs.delete(kj["id"])
     r = account.delete_creator(c["id"], with_clips=True)
     check("deleting a creator with their clips removes their videos and folder", r["ok"] and r["videos"] == 1 and not jobs.get(j2["id"]) and not creators.get(c["id"]) and not creators.root(c["id"]).exists(), str(r))
     try:

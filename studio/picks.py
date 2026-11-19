@@ -248,8 +248,6 @@ def edit_cut(job, cut_id, options):
     style = st if isinstance(st, str) and st in render.STYLES else cr.get("style", "bounce")
     layout = ly if isinstance(ly, str) and ly in render.LAYOUTS else cr.get("layout", "blur")
     res = int(options["res"]) if str(options.get("res")) in ("720", "1080") else cr.get("res", 1080)
-    if job.get("creator"):
-        creators.remember_res(job["creator"], res)       # the person's choice, used for this creator from now on
     hook = str(options.get("hook") or "").strip()[:60]
     boxes = render.clean_split(options.get("split"))
     words = [dict(w, s=round(w["s"] - cut["start"], 2), e=round(w["e"] - cut["start"], 2))
@@ -264,6 +262,8 @@ def edit_cut(job, cut_id, options):
     except Exception:  # noqa: BLE001
         jobs.delete(new["id"])
         raise ValueError("This clip couldn't be opened for editing. Make it again.")
+    if job.get("creator") and str(options.get("res")) in ("720", "1080"):
+        creators.remember_res(job["creator"], res)       # the person's choice, used for this creator from now on
     (Path(new["dir"]) / "words.json").write_text(json.dumps(words), encoding="utf-8")
     clip = {"id": "clip001", "start": 0.0, "end": round(meta["duration"], 2), "score": p["score"],
             "reason": p["reason"], "hook": hook, "title": new["source"]["name"], "description": "", "hashtags": [], "highlight_words": [],

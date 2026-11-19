@@ -101,6 +101,25 @@ check("a live clip uses the creator's size as it is now", got["res"], 720)
 c1080 = dict(job["clips"][0], res=1080, status="queued")
 jobs.render_one(job, c1080, [])
 check("rendering a clip does not change the creator's saved size", creators.get(cr["id"])["res"], 720)
+# creating a video remembers the size only when the options really named one
+creators.update(cr["id"], {"res": 1080})
+jobs.create({"type": "file", "path": str(src), "name": "src.mp4"}, {"layout": "blur"}, enqueue=False, creator=cr["id"])
+check("a video made without a size choice leaves the saved size alone", creators.get(cr["id"])["res"], 1080)
+jobs.create({"type": "file", "path": str(src), "name": "src.mp4"}, {"res": 720}, enqueue=False, creator=cr["id"])
+check("a video made with a size in its options remembers it on the creator", creators.get(cr["id"])["res"], 720)
+jobs.create({"type": "file", "path": str(src), "name": "src.mp4"}, {"res": 5}, enqueue=False, creator=cr["id"])
+check("a junk size in the options is not remembered", creators.get(cr["id"])["res"], 720)
+# re-making a clip: the creator's size changes only when the person changed the clip's size
+creators.update(cr["id"], {"res": 720})
+job["clips"][0]["res"] = 1080
+jobs.request_render(job["id"], "clip001", {"res": 1080, "hook": "x"})
+check("re-making with an unchanged size leaves the creator's saved size alone", creators.get(cr["id"])["res"], 720)
+jobs.request_render(job["id"], "clip001", {"res": 720})
+check("re-making with a changed size remembers it", creators.get(cr["id"])["res"], 720)
+creators.update(cr["id"], {"res": 1080})
+job["clips"][0]["res"] = 1080
+jobs.request_render(job["id"], "clip001", {"res": 720})
+check("a changed size is remembered on the creator", creators.get(cr["id"])["res"], 720)
 from studio import account
 gone = creators.create({"name": "Soon Gone"})
 account.delete_creator(gone["id"], with_clips=True)
