@@ -285,6 +285,10 @@ def edit_cut(job, cut_id, options):
                 clip[k] = d.get(k, clip[k])
         if not hook:
             clip["hook"] = d.get("hook", "")
+        if clip["layout"] == "gameplay":     # the webcam in the corner: found in the picture, as for any video
+            face = jobs._facecam(new)
+            if face:
+                clip["facecam"] = face
         jobs.render_one(new, clip, words)
 
     jobs.submit(make)
