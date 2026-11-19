@@ -67,6 +67,7 @@ def main() -> int:
                 ("security: visitor address, email addresses, Google sign-in, prompts", ["tests/test_hardening.py"]),
                 ("long logs, the machine monitor, failed recordings, admin day totals", ["tests/test_robustness.py"]),
                 ("live transcriber: moments, kept stream, cuts, edit", ["tests/test_picks.py"]),
+                ("finding moments: baseline, chat, timing, fusion, rating", ["tests/test_signals.py"]),
                 ("the game + cam layout", ["tests/test_split.py"]),
                 ("live transcriber routes", ["tests/test_transcriber_routes.py"]),
                 ("deleting a creator, keeping or deleting their clips", ["tests/test_delete_creator.py"])]

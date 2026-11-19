@@ -1908,6 +1908,9 @@ function drawCreatorForm() {
         <label class="f">Minimum gap between live clips (minutes)<input data-k="min_gap_min" type="number" min="0" max="60" value="${c.min_gap_min}"></label>
         <label class="f span">Always clip the last 30 seconds when someone says<input data-k="trigger_words" value="${esc(c.trigger_words)}" placeholder="clip that, clip it"><small class="sub" style="font-weight:400">Separate phrases with commas. Matched on the transcript, so it needs no AI call.</small></label>
       </div></div>
+    <div class="card"><h2>Moment finding</h2><p class="help">How a sudden jump in the stream is noticed.</p>
+      <div class="fields"><label class="sw span"><input type="checkbox" data-k="sig_baseline" ${c.sig_baseline === false ? "" : "checked"}><span>Use the new baseline<small>Compare loudness and chatters with the last 15 minutes of this stream, and keep only the strongest moments each hour</small></span></label>
+        <label class="f">How unusual a jump must be<input data-k="jump_z" type="number" step="0.5" min="2" max="8" value="${c.jump_z ?? 3.5}"></label></div></div>
     <div class="card"><h2>Clips</h2><p class="help">How this creator's clips look.</p>
       <div class="fields"><label class="sw span"><input type="checkbox" data-k="captions" data-caption-toggle ${c.captions === false ? "" : "checked"}>Generate captions</label>
         <label class="f">Caption style<select data-k="style" data-caption-style ${c.captions === false ? "disabled" : ""}>${opts(S.status.styles, c.style)}</select></label>

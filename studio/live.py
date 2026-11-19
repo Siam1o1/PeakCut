@@ -11,7 +11,7 @@ from pathlib import Path
 
 import numpy as np
 
-from . import alerts, auth, brain, config, creators, ctx, facecam, games, jobs, load, media, picks, transcribe, usage
+from . import alerts, auth, brain, config, creators, ctx, facecam, games, jobs, load, media, picks, profiles, signals, transcribe, usage
 
 # ":username!user@host PRIVMSG #channel :the message"
 _NICK = re.compile(r"(?m)^:([A-Za-z0-9_]{2,25})!")
@@ -155,12 +155,15 @@ class Session:
         self.last_spike = -999.0      # when the last jump was sent to the AI (stream seconds)
         self.base = {}                # running averages the jumps are measured against, shown on the card
         self.spikes = 0
+        self.viewers = None           # how many people are watching, when the platform says (checked about once a minute)
+        self.top = signals.HourlyTop(settings.get("live_per_hour", 4))   # keeps the strongest moments of each hour
+        self.zs = {"loud": 0.0, "chat": 0.0}   # how unusual loudness and chat are now, against the last 15 minutes
         self.game = ""                # which game this stream is, when it can be told
         self.facecam_box = None       # where the webcam is, found once the first clip is made
         self.facecam_checked = False  # the look is made once, even when it finds nothing
         self.ai_busy = 0.0            # when the AI check now running was started, 0 when none is
 
-    def _ask_ai(self, window=None, why=None):
+    def _ask_ai(self, window=None, why=None, score=None):
         """Ask the AI on its own thread, so a slow answer never stops the recording.
 
         While the AI thinks, the speech keeps being written and a "clip that" still works. One check
@@ -172,7 +175,7 @@ class Session:
 
         def work():
             try:
-                self._ai_check(window, why)
+                self._ai_check(window, why, score)
             except Exception as e:  # noqa: BLE001
                 self.job["ai"]["last_error"] = str(e)[-200:]
             finally:
@@ -218,9 +221,27 @@ class Session:
         SESSIONS[self.job["id"]] = self
         threading.Thread(target=ctx.bind(self._ingest), daemon=True).start()
         threading.Thread(target=ctx.bind(self._analyze), daemon=True).start()
+        if self._baseline():
+            threading.Thread(target=self._watch_viewers, daemon=True, name="viewers").start()
         m = re.match(r"^https?://(?:www\.)?twitch\.tv/([A-Za-z0-9_]+)", self.job["source"]["url"])
         if m:
             threading.Thread(target=ctx.bind(self._chat), args=(m.group(1).lower(),), daemon=True).start()
+
+    def _baseline(self):
+        """True when moments are found against the last 15 minutes of this stream, not by the old fixed rules."""
+        return bool(self.settings.get("sig_baseline", True))
+
+    def _watch_viewers(self):
+        """About once a minute, ask the platform how many people are watching. It runs on its own thread and any error
+        is ignored: without a count, chat is simply measured per chatter instead of per viewer."""
+        url = self.job["source"]["url"]
+        while not self.stop_flag.is_set() and not self.ended:
+            try:
+                v = profiles.live_now(profiles.platform_of(url), url).get("viewers")
+                self.viewers = int(v) if v else None
+            except Exception:  # noqa: BLE001
+                pass
+            self.stop_flag.wait(60)
 
     def stop(self, note="Stopped by you"):
         """Instant for the user: the card and the creator show as stopped straight away. Clips already being made
@@ -359,6 +380,8 @@ class Session:
         The crowd is counted as people, not messages: ten people saying "GG" is a reaction, one
         person saying "GG" ten times is a bot."""
         elapsed = self.samples / SR
+        if self._baseline():
+            return self._chat_z(int(e) + 6) >= float(self.settings.get("jump_z", 3.5))
         if not self.chat_total or elapsed < 60:
             return False
         avg = self.chat_total / elapsed
@@ -372,6 +395,28 @@ class Session:
         p_avg = sum(len(v) for v in people.values()) / max(1, len(people))
         p_rate = sum(len(people.get(t, ())) for t in range(a, b + 1)) / (b - a + 1)
         return p_rate >= max(2.0, 1.5 * p_avg)
+
+    def _chat_series(self, end, length):
+        """Different people talking in each second up to `end`, per 1,000 viewers when the viewer count is known.
+        None when there is no chat to read. Where names cannot be told, messages are counted instead."""
+        people = self.chat_people()
+        rng = range(max(0, end - length + 1), end + 1)
+        if people:
+            return [signals.per_viewer(len(people.get(t, ())), self.viewers) for t in rng]
+        if self.chat_on or self.chat_total:
+            return [signals.per_viewer(self.chat.get(t, 0), self.viewers) for t in rng]
+        return None
+
+    def _chat_z(self, end):
+        """How unusual chat is in the five seconds up to `end`, against the 15 minutes before. A chat that is nearly
+        silent has almost no spread, so a couple of messages would score huge: that needs at least a small crowd."""
+        series = self._chat_series(end, 930)
+        if not series:
+            return 0.0
+        crowd = signals.per_viewer(1.5, self.viewers) * 5
+        if sum(series[-5:]) < crowd:
+            return 0.0
+        return min(signals.series_z(series), self.Z_CAP)
 
     def chat_people(self):
         """Second -> how many different people were talking, where that is known.
@@ -407,12 +452,15 @@ class Session:
         return True
 
     AUTO_BEFORE, AUTO_AFTER, AUTO_GAP = 30, 20, 60   # seconds of stream sent around a jump; least time between jumps
+    Z_CAP = 50.0                                      # a z-score above this is not told apart: it is a moment either way
     JUMP = 0.6                                        # 60% louder or busier than the last three minutes
 
     def _watch_spikes(self):
         """Always on. Keep a running average of loudness and chat over the last three minutes (leaving out the
         last few seconds), and mark a moment when the last five seconds jump a set percentage above it. Nothing is
         sent yet: the AI gets that moment once its transcript is ready, with the half minute before it."""
+        if self._baseline():
+            return self._watch_spikes_z()
         with self.lock:
             n = len(self.db)
             if n < 60:
@@ -445,7 +493,32 @@ class Session:
             self.last_spike = n
             self.spikes += 1
 
-    def _ai_check(self, window=None, why=None):
+    def _watch_spikes_z(self):
+        """The same watch, measured against the last 15 minutes of this stream: how far the last five seconds of
+        loudness, and of different chatters (per 1,000 viewers when known), sit from what is usual here. A middle
+        value and a middle distance are used, so a long shout earlier does not hide the next one."""
+        with self.lock:
+            n = len(self.db)
+            if n < 60:
+                self.base = {"warming": True}
+                return
+            loud = 10 ** (np.array(self.db[max(0, n - 930):], dtype=np.float64) / 20)   # plain level, not decibels
+            zc = self._chat_z(n)
+        zl = min(signals.series_z(loud), self.Z_CAP)
+        self.zs = {"loud": zl, "chat": zc}
+        jz = float(self.settings.get("jump_z", 3.5))
+        self.base = {"loud_z": round(zl, 1), "chat_z": round(zc, 1), "jump_z": jz}
+        why = []
+        if zl >= jz:
+            why.append(f"loudness z {zl:.1f}")
+        if zc >= jz:
+            why.append(f"chat z {zc:.1f}")
+        if why and not self.spike and n - self.last_spike >= self.AUTO_GAP:
+            self.spike = {"t": float(n - 3), "why": ", ".join(why), "z": max(zl, zc)}
+            self.last_spike = n
+            self.spikes += 1
+
+    def _ai_check(self, window=None, why=None, score=None):
         """Judge 1 reads only the words. If it finds a moment, judge 2 reads only the loudness and chat activity
         for the same stretch, without seeing the words. A clip is made when both say yes (or as set in Setup)."""
         st = self.settings
@@ -466,7 +539,12 @@ class Session:
         if len(win) < 8:
             self.skipped += 1
             return self._verdict(verdict, "Skipped: nobody talking")
-        if len(recent) >= st["live_per_hour"] and not must and not self.pick:
+        strongest = self._baseline() and not self.pick and (trigger or "").startswith("Jump") and score is not None
+        if strongest:    # the strongest few moments of the hour are kept, whatever order they came in
+            if not self.top.admit(float(score), time.time()):
+                self.skipped += 1
+                return self._verdict(verdict, "Passed over: stronger moments this hour")
+        elif len(recent) >= st["live_per_hour"] and not must and not self.pick:
             self.skipped += 1
             return self._verdict(verdict, f"Skipped: {st['live_per_hour']} clips this hour already")
         usage.set_context(self.job["creator"], self.job["title"] or "Live stream")
@@ -733,7 +811,7 @@ class Session:
                     self._ask_ai((said["t"] - self.SAID_BEFORE, said["t"] + self.SAID_AFTER), said["why"])
                 elif sp and (self.t_done >= sp["t"] + self.AUTO_AFTER or (self.ended and not busy)):
                     self.spike = None
-                    self._ask_ai((sp["t"] - self.AUTO_BEFORE, sp["t"] + self.AUTO_AFTER), "Jump: " + sp["why"])
+                    self._ask_ai((sp["t"] - self.AUTO_BEFORE, sp["t"] + self.AUTO_AFTER), "Jump: " + sp["why"], sp.get("z"))
                 elif self.t_done - self.last_check >= every * 60 or (self.ended and not busy and self.t_done > self.last_check):
                     self._ask_ai()
                 self._publish()
