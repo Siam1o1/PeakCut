@@ -44,7 +44,8 @@ def add(s, v, clip=None):
         g = {"id": f"sg{n:03d}", "t": v.get("t"), "start": v["start"], "end": v["end"], "peak": v.get("peak"),
              "summary": str(v.get("summary") or "")[:300], "why": str(v.get("why") or "")[:300],
              "result": str(v.get("result") or "")[:120], "words": v.get("transcript"), "made_at": time.time(),
-             "score": int((clip or {}).get("score") or 0),
+             "score": int((clip or {}).get("score") or v.get("viral") or 0),
+             "viral": (clip or {}).get("score", v.get("viral")),       # the AI's rating out of 100; None: never asked
              "hold": {"status": "waiting", "file": None, "from": None, "to": None, "error": None}}
         for k in POST_KEYS:
             if clip and clip.get(k):

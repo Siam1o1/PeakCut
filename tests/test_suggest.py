@@ -135,6 +135,12 @@ with ctx.as_user(auth.LOCAL_ID):
                           "hashtags": ["gta6"], "rating": {"hook": 6, "value": 62}}}, "Words judge: nothing clip-worthy")
     g8 = s8.job["suggestions"][0]
     check("the AI's hook, title and score are kept with the suggestion", (g8["hook"], g8["title"], g8["score"]), ("HE CRASHED", "The crash", 62))
+    s9 = session(cr)
+    s9._verdict({"t": 100, "start": 60.0, "end": 90.0, "viral": 41}, "Words judge: nothing clip-worthy")
+    s9._verdict({"t": 130, "start": 60.0, "end": 90.0}, "Passed over: stronger moments this hour")
+    check("the viral rating goes with the suggestion; one the AI never saw is not rated",
+          [(g["viral"], g["score"]) for g in s9.job["suggestions"]], [(41, 41), (None, 0)])
+    check("...and the AI's own moment's score wins", g8["viral"], 62)
     suggest.flush(s8)
     c8 = suggest.clip(s8.job, g8["id"])
     check("...and become the draft's, with no extra AI call", (c8["hook"], c8["title"], c8["description"], c8["hashtags"], c8["score"], asked),

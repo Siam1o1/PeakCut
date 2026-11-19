@@ -420,12 +420,14 @@ Answer with one JSON object:
   (for example: just chatter, no payoff, needs context, nothing happens). If not, say why the best one works.
 - best_start, best_end: the [seconds] of the stretch you would clip if someone made you clip something here,
   between {min_len} and {max_len} seconds long, even when it is not good enough to return.
+- best_score: 0 to 100, how likely that stretch is to do well as a short with strangers. Be honest: most stretches
+  score below 50, and a stretch you would not return scores below {min_score}.
 - clips: the moments you return, usually []. Each one follows the rules below.
 """
 LIVE_SCHEMA = {
     "type": "OBJECT",
     "properties": {"summary": {"type": "STRING"}, "why": {"type": "STRING"}, "best_start": {"type": "NUMBER"},
-                   "best_end": {"type": "NUMBER"}, "clips": SCHEMA},
+                   "best_end": {"type": "NUMBER"}, "best_score": {"type": "INTEGER"}, "clips": SCHEMA},
     "required": ["summary", "why", "clips"],
 }
 MUST_PICK = "This time you MUST return the single best moment in this stretch, even if it is only decent."
@@ -487,7 +489,7 @@ SIG_SCHEMA = {
 
 
 def judge_transcript(words, start, now, title="", uploader="", min_len=15, max_len=60, existing=(), n=2, must=False,
-                    game=None, timeout=None, profile="", notes=None):
+                    game=None, timeout=None, profile="", notes=None, min_score=80):
     """Judge 1: words only. `profile` is what earlier streams showed about this creator (already wrapped as untrusted
     text). Returns (clips, tokens). A dict passed as `notes` gets the judge's one-line summary of the stretch, the
     reason for its decision, and `best`: the (start, end) it would clip if it had to, or None."""
@@ -496,7 +498,7 @@ def judge_transcript(words, start, now, title="", uploader="", min_len=15, max_l
         return [], 0
     prompt = (TRANSCRIPT_JUDGE.format(title=_safe(title) or "unknown", uploader=_safe(uploader) or "unknown", start=start, now=now,
                                       n=n, must=MUST_PICK if must else NOT_MUST)
-              + LIVE_ANSWER.format(min_len=min_len, max_len=max_len)
+              + LIVE_ANSWER.format(min_len=min_len, max_len=max_len, min_score=min_score)
               + _game_rules(game) + (profile or "")
               + RULES.format(min_len=min_len, max_len=max_len, transcript=_fmt(lines)))
     out, _model, spent = ask_ai(prompt, LIVE_SCHEMA, purpose="Live: words judge", timeout=timeout)
@@ -527,7 +529,9 @@ def _notes(out, lines, words, start, now, min_len, max_len):
         s, e = _snap({"start": s, "end": e}, lines, words, min_len, max_len, now)
         if e - s >= min(min_len, 5) - 1:
             best = (round(max(start, s), 2), round(min(now, e), 2))
-    return {"summary": _text(out.get("summary"), 160), "why": _text(out.get("why"), 200), "best": best}
+    score = _num(out.get("best_score"), None)
+    return {"summary": _text(out.get("summary"), 160), "why": _text(out.get("why"), 200), "best": best,
+            "score": max(0, min(100, int(score))) if best and score is not None else None}
 
 
 def judge_signals(z, chat, start, now, unit="messages", timeout=None, profile=""):

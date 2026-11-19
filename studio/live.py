@@ -865,6 +865,7 @@ class Session:
             cands, tok = brain.judge_transcript(win, ws, now, title, up, st["min_len"], st["max_len"], prev,
                                                 n=1 if every <= 2 else 2, must=must, game=self._game(),
                                                 timeout=config.LIVE_AI_TIMEOUT, profile=self._profile(),
+                                                min_score=st["min_score"],
                                                 notes=notes)  # Auto (0) asks for one
         except Exception as e:  # noqa: BLE001
             self.job["ai"]["last_error"] = str(e)[-200:]
@@ -892,9 +893,10 @@ class Session:
             if best:
                 why = f"Best moment scored {best['score']}, {st['min_score']} needed. {why}".strip()
                 self._offer(verdict, best["start"], best["end"], best.get("peak"))
-                verdict["clip"] = best
+                verdict.update(clip=best, viral=best["score"])
             elif notes.get("best"):
                 self._offer(verdict, *notes["best"])
+                verdict["viral"] = notes.get("score")
             verdict.update(summary=notes.get("summary") or (best or {}).get("description") or "", why=why)
             return self._verdict(verdict, "Words judge: nothing clip-worthy")
         z = brain.loud_zscore(np.array(self.db, dtype=np.float32))
@@ -920,7 +922,7 @@ class Session:
             verdict["reaction"] = rs
             both = bool(match)
             ok = both or (st["decide_mode"] == "either" and c["score"] >= 90) or (must and added == 0)
-            told = dict(verdict, summary=notes.get("summary") or c.get("description") or "")
+            told = dict(verdict, summary=notes.get("summary") or c.get("description") or "", viral=c["score"])
             self._offer(told, c["start"], c["end"], c.get("peak"))
             told["clip"] = c
             if not ok:
