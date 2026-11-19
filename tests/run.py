@@ -73,7 +73,8 @@ def main() -> int:
                 ("the game + cam layout", ["tests/test_split.py"]),
                 ("live transcriber routes", ["tests/test_transcriber_routes.py"]),
                 ("deleting a creator, keeping or deleting their clips", ["tests/test_delete_creator.py"]),
-                ("the AI's decisions on the live card: why, and clip anyway", ["tests/test_decisions.py"])]
+                ("the AI's decisions on the live card: why, and clip anyway", ["tests/test_decisions.py"]),
+                ("the AI's suggestions kept after the stream: clip or delete", ["tests/test_suggest.py"])]
         for name, args in runs:
             print(f"\n=== {name} ===", flush=True)
             r = subprocess.run([sys.executable, *args], cwd=ROOT, env=env, capture_output=True, text=True, encoding="utf-8", errors="replace")

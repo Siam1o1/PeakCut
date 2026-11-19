@@ -11,7 +11,7 @@ from pathlib import Path
 
 import numpy as np
 
-from . import alerts, auth, brain, config, creators, ctx, facecam, games, jobs, load, media, memory, picks, profiles, signals, transcribe, twitch, usage
+from . import alerts, auth, brain, config, creators, ctx, facecam, games, jobs, load, media, memory, picks, profiles, signals, suggest, transcribe, twitch, usage
 
 # ":username!user@host PRIVMSG #channel :the message"
 
@@ -892,6 +892,7 @@ class Session:
             if best:
                 why = f"Best moment scored {best['score']}, {st['min_score']} needed. {why}".strip()
                 self._offer(verdict, best["start"], best["end"], best.get("peak"))
+                verdict["clip"] = best
             elif notes.get("best"):
                 self._offer(verdict, *notes["best"])
             verdict.update(summary=notes.get("summary") or (best or {}).get("description") or "", why=why)
@@ -921,6 +922,7 @@ class Session:
             ok = both or (st["decide_mode"] == "either" and c["score"] >= 90) or (must and added == 0)
             told = dict(verdict, summary=notes.get("summary") or c.get("description") or "")
             self._offer(told, c["start"], c["end"], c.get("peak"))
+            told["clip"] = c
             if not ok:
                 self.rejected += 1
                 heard = max(sig, key=lambda m: m["score"], default=None)
@@ -980,9 +982,15 @@ class Session:
     def _verdict(self, v, result):
         v = dict(v)
         cand = v.pop("cand", None)
+        clip = v.pop("clip", None)          # the AI's own moment, for the suggestion's hook and post text
         if v.get("start") is None or result.startswith(("Clipped", "Already", "AI error")):
             for k in ("start", "end", "peak"):     # nothing for the clipper to answer
                 v.pop(k, None)
+        if not self.pick and v.get("start") is not None:
+            try:                       # kept with the recording, so it can still be clipped after the stream
+                v["sid"] = suggest.add(self, dict(v, result=result), clip)
+            except Exception:  # noqa: BLE001 - a suggestion that could not be kept is only shown
+                pass
         with self.lock:
             self.vn += 1
             v.update(id=self.vn, result=result)
@@ -1241,6 +1249,8 @@ class Session:
                 self._manual_step()
                 if self.pick:
                     picks.flush_holds(self)
+                else:
+                    suggest.flush(self)      # the AI's suggestions keep their piece of the stream
                 # Three ways the AI is asked: on the creator's schedule (every N minutes), and always, when the
                 # stream suddenly gets louder or chat busier, or when someone says "clip".
                 every = int(self.settings.get("ai_every_min", 3)) or 3
@@ -1276,7 +1286,7 @@ class Session:
             # stream is not saved yet holds the session open the same way, so pressing Stop never loses it.
             with self.lock:
                 pending_viewers = bool(self.viewer_points)
-            holds = self.pick and (bool(picks.waiting(self)) or pending_viewers)
+            holds = (bool(picks.waiting(self)) or pending_viewers) if self.pick else bool(suggest.waiting(self.job))
             if ((self.user_stopped and not self.manual and not self.ai_busy and not holds)
                     or (self.ended and not busy and not self.ai_busy and not holds
                         and len(self.pending) < SR * 2 and not self.manual)):
@@ -1341,6 +1351,10 @@ def recover(job):
         if p["hold"]["status"] in ("waiting", "saving"):     # interrupted: save it from the pieces still on disk
             p["hold"]["status"] = "saving"
             jobs.submit_live(lambda p=p: picks.save_hold(s, p))
+    for g in job.get("suggestions", []):
+        if g["hold"]["status"] in ("waiting", "saving"):     # the same for the AI's suggestions
+            g["hold"]["status"] = "saving"
+            jobs.submit_live(lambda g=g: suggest.save_hold(s, g))
 
     def cleanup():
         for f in s.buf.glob("*"):
@@ -1489,6 +1503,7 @@ def _resume_recordings(paused):
 
 def start():
     picks.after_restart()
+    suggest.after_restart()
     paused = []
     for j in jobs.all_jobs():
         if j.get("recover"):

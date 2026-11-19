@@ -575,6 +575,12 @@ img.av{object-fit:cover}
 .dec .dwhy{margin-top:2px;color:var(--dim);overflow-wrap:anywhere}
 .dec .dacts{display:flex;gap:6px;margin-top:6px;flex-wrap:wrap}
 .dec.done{opacity:.6}
+.sugs{background:var(--muted);border-radius:var(--r);padding:12px 14px;margin:12px 0}
+.sugs h4{font-size:13px;font-weight:600;margin-bottom:10px;display:flex;gap:8px;flex-wrap:wrap;align-items:baseline}
+.sugs h4 .sub{font-weight:400}
+.sugs .decs{max-height:440px}
+.sugmore{margin-top:12px}
+.sugmore summary{cursor:pointer;font-size:13px;color:var(--dim)}
 .meters{align-items:start}
 .meter.wide{grid-column:1/-1}
 .meter.wide .decs{max-height:none}
@@ -1735,9 +1741,10 @@ function clipsSorted(clips) {
 function clipHtml(j, c) {
   const m = `/media/${j.id}/`, a = `data-j="${j.id}" data-c="${esc(c.id)}"`;
   const body = c.status === "done" ? `<img src="${m}${esc(c.cover)}?v=${c.version}" alt="" loading="lazy"><span class="veil"><span>${ic("play")}</span></span>`
+    : c.status === "draft" ? `<span class="making" style="animation:none">Not made yet. Open it to set it up, then press Make clip.</span>`
     : c.status === "error" ? `<span class="making" style="animation:none;color:var(--bad);background:var(--bad-soft)">Could not make this clip. Open it to try again.</span>`
     : `<span class="making">${c.status === "rendering" ? "Making this clip…" : "Waiting its turn…"}</span>`;
-  const key = `c:${j.id}:${c.id}`, busyClip = c.status === "queued" || c.status === "rendering";
+  const key = `c:${j.id}:${c.id}`, busyClip = c.status === "queued" || c.status === "rendering", draft = c.status === "draft";
   return `<article class="clip ${sel().has(key) ? "picked" : ""}">
     <button class="shot" data-act="openclip" ${a} aria-label="Open clip: ${esc(c.title || c.hook)}">${body}
       <span class="badge l ${scoreCls(c.score)}" title="${c.rating ? "Viral rating" : "Score"}">${c.score || "Hand"}</span><span class="badge r">${fmt(c.end - c.start)}</span></button>
@@ -1746,12 +1753,13 @@ function clipHtml(j, c) {
       <div class="ttl">${esc(c.title)}</div>
       ${postPills(c) ? `<div class="row" style="gap:4px">${postPills(c)}</div>` : ""}
       <div class="clip-foot">
-        ${busyClip ? "" : `<label class="selck" title="Select this clip"><input type="checkbox" data-sel="${key}" ${sel().has(key) ? "checked" : ""} aria-label="Select this clip"></label>`}
+        ${busyClip || draft ? "" : `<label class="selck" title="Select this clip"><input type="checkbox" data-sel="${key}" ${sel().has(key) ? "checked" : ""} aria-label="Select this clip"></label>`}
         ${c.status === "done" ? `<a class="btn sm icon ghost" href="${m}${esc(c.file)}?download=1" title="Download" aria-label="Download">${ic("down")}</a>` : ""}
         <button class="btn sm icon ghost" data-act="copy" ${a} title="Copy post text" aria-label="Copy post text">${ic("copy")}</button>
         ${busyClip ? "" : `<button class="btn sm icon ghost" data-act="delclip" ${a} title="Delete this clip" aria-label="Delete this clip">${ic("trash")}</button>`}
         <span class="grow"></span>
         ${c.status === "done" ? `<button class="btn sm" data-act="openclip" ${a}>${ic("send")}Post</button>` : ""}
+        ${draft ? `<button class="btn sm primary" data-act="openclip" ${a}>${ic("scissors")}Set up</button>` : ""}
       </div>
     </div></article>`;
 }
@@ -1764,7 +1772,37 @@ function everyPick(cid, v) {
     <div class="pick-menu" role="listbox">${EVERY.map(([k, l, h]) => `<button type="button" class="pick-opt" role="option" data-v="${k}" aria-selected="${k === cur[0]}"><span class="pl">${l}</span>${h ? `<small class="ph">${h}</small>` : ""}${ic("check").replace("<svg", '<svg class="tick"')}</button>`).join("")}</div></div>`;
 }
 /* One AI decision on the live card: what happened, why the AI said no, and the clipper's own answer to it. */
+/* The clipper's two answers to an AI suggestion: clip that part, or delete it (and its kept piece of stream). */
+function sgActs(j, g) {
+  const h = g.hold || {}, del = `<button class="btn sm" data-act="sgdel" data-j="${j.id}" data-s="${esc(g.id)}">${ic("trash")}Delete</button>`;
+  if (h.status === "ready") {
+    const a = Math.max(g.start, h.from ?? g.start), e = Math.min(g.end, h.to ?? g.end);
+    return `<div class="dacts"><button class="btn sm primary" data-act="sgclip" data-j="${j.id}" data-s="${esc(g.id)}" title="Clip ${fmt(a)} to ${fmt(e)}">${ic("scissors")}Clip ${Math.round(e - a)}s</button>${del}</div>`;
+  }
+  if (h.status === "error") return `<div class="dacts"><span class="err" style="margin:0">${esc(h.error || "This part of the stream could not be kept.")}</span>${del}</div>`;
+  return `<div class="dacts"><span class="sub">Saving this part of the stream…</span>${del}</div>`;
+}
+function sgHtml(j, g) {
+  return `<div class="dec">
+    <div>${fmt(g.t || g.start)}${g.words != null ? " · words " + g.words : ""} · <span class="sub">${esc(g.result)}</span></div>
+    ${g.summary ? `<div class="dsum">${esc(g.summary)}</div>` : ""}
+    ${g.why ? `<div class="dwhy">Why not: ${esc(g.why)}</div>` : ""}
+    ${sgActs(j, g)}</div>`;
+}
+function sgList(j) {
+  const list = [...(j.suggestions || [])].reverse();
+  return list.length ? `<div class="sugs"><h4>AI suggestions <span class="sub">${list.length} kept · clip the ones you want, delete the rest</span></h4><div class="decs">${list.map(g => sgHtml(j, g)).join("")}</div></div>` : "";
+}
 function decHtml(j, v) {
+  if (v.sid) {           // kept with the recording: answered through the suggestion, which outlives the stream
+    const g = (j.suggestions || []).find(x => x.id === v.sid);
+    const gone = g ? "" : j.clips.some(c => c.sug === v.sid) ? "Clipped by you, see the clips below" : "Deleted";
+    return `<div class="dec${g ? "" : " done"}">
+    <div>${fmt(v.t)}${v.transcript != null ? " · words " + v.transcript : ""}${v.reaction != null ? " · reaction " + v.reaction : ""} · <span class="sub">${esc(v.result)}</span></div>
+    ${v.summary ? `<div class="dsum">${esc(v.summary)}</div>` : ""}
+    ${v.why ? `<div class="dwhy">Why not: ${esc(v.why)}</div>` : ""}
+    ${g ? sgActs(j, g) : `<div class="dwhy">${gone}</div>`}</div>`;
+  }
   const open = v.start != null && !v.state;
   const len = v.start != null ? Math.round(v.end - v.start) : 0;
   return `<div class="dec${v.state ? " done" : ""}">
@@ -1793,7 +1831,7 @@ function liveHtml(j) {
       ${L.chat ? `<div class="meter"><h4>Chat messages per second</h4>${spark(L.chat, "chat", 0, Math.max(4, ...L.chat))}</div>` : ""}
       <div class="meter"><h4>What was just said</h4><div class="said">${L.lines.length ? L.lines.map(t => `<div>${esc(t)}</div>`).join("") : "<div>Listening…</div>"}</div></div>
       <div class="meter wide"><h4>Latest AI decisions</h4><div class="decs">${(L.verdicts || []).length ? L.verdicts.slice(0, 4).map(v => decHtml(j, v)).join("") : "<div class='sub'>First check soon…</div>"}</div></div>
-    </div>${j.error ? `<div class="err">${esc(j.error)}</div>` : ""}</div>
+    </div>${(j.suggestions || []).length > 4 ? `<details class="sugmore"><summary>All ${j.suggestions.length} kept AI suggestions</summary>${sgList(j)}</details>` : ""}${j.error ? `<div class="err">${esc(j.error)}</div>` : ""}</div>
     ${j.clips.length ? `<div class="grid" style="margin-bottom:28px">${[...j.clips].reverse().map(c => clipHtml(j, c)).join("")}</div>` : ""}`;
 }
 function jobHtml(j) {
@@ -1811,6 +1849,7 @@ function jobHtml(j) {
     ${busy ? `<div class="bar"><i style="width:${Math.round(j.progress * 100)}%"></i></div><p class="sub">${esc(j.stage)} · ${Math.round(j.progress * 100)}%</p>` : ""}
     ${j.status === "done" && !j.clips.length ? `<p class="sub">${esc(j.stage)}</p>` : ""}
     ${j.error ? `<div class="err">${esc(j.error)}<button class="rep" data-act="report" data-ctx="${esc("Video failed: " + (j.title || j.source.name || "") + " | " + j.error)}">Report this</button></div>` : ""}${j.ai?.note ? `<p class="sub">${esc(j.ai.note)}</p>` : ""}
+    ${sgList(j)}
     ${j.clips.length ? `<div class="grid">${clipsSorted(j.clips).map(c => clipHtml(j, c)).join("")}</div>` : ""}`;
 }
 /* ---- selecting several videos and clips: delete or download them together */
@@ -2246,7 +2285,9 @@ function drawClipDlg(full) {
   const j = jobOf(D.jid), c = j?.clips.find(x => x.id === D.cid), dlg = $("#clipdlg");
   if (!c) { if (dlg.open) dlg.close(); return; }
   const m = `/media/${j.id}/`, sig = c.status + c.version;
+  const draft = c.status === "draft";
   const stage = c.status === "done" ? `<video src="${m}${esc(c.file)}?v=${c.version}" poster="${m}${esc(c.cover)}?v=${c.version}" controls autoplay playsinline></video>`
+    : draft && c.preview ? `<video src="${m}${esc(c.preview)}#t=${Math.max(0, c.start - (c.src_offset || 0)).toFixed(1)}" controls playsinline title="The part of the stream this clip is cut from"></video>`
     : c.status === "error" ? `<div class="err" style="padding:20px;text-align:center">${esc(c.error || "Could not make this clip.")}</div>`
     : `<span class="making">${c.status === "rendering" ? "Making this clip…" : "Waiting its turn…"}</span>`;
   if (full) {
@@ -2267,19 +2308,21 @@ function drawClipDlg(full) {
         <h3>Post text</h3>
         <label class="f">Title<input data-f="title" value="${esc(c.title)}"></label>
         <label class="f">Description<textarea data-f="description" rows="2">${esc(c.description)}</textarea></label>
-        <button class="btn" data-act="remake">${ic("scissors")}Save and re-make clip</button>
-        <h3>Post it</h3>
+        ${draft ? `<p class="sub">Nothing is made until you press Make clip. Start and end are on the recording's clock.</p>
+        <button class="btn primary" data-act="remake">${ic("scissors")}Make clip</button>`
+          : `<button class="btn" data-act="remake">${ic("scissors")}Save and re-make clip</button>`}
+        ${draft ? "" : `<h3>Post it</h3>
         <div id="dposts" class="row" style="gap:4px"></div>
         ${S.accounts.length ? `<div class="row">${S.accounts.map(a => `<label class="ck"><input type="checkbox" data-pacc value="${esc(a.id)}">${esc(a.label)} · ${esc(a.name)}</label>`).join("")}</div>
           <div class="row"><button class="btn primary" data-act="postnow">${ic("send")}Post now</button><button class="btn" data-act="postqueue">Add to queue</button></div>`
-          : `<p class="help">No accounts connected yet. Connect one in Settings.</p>`}
+          : `<p class="help">No accounts connected yet. Connect one in Settings.</p>`}`}
         <div class="row" style="margin-top:auto;padding-top:8px;border-top:1px solid var(--line)">
           ${c.status === "done" ? `<a class="btn" href="${m}${esc(c.file)}?download=1">${ic("down")}Download</a>` : ""}
           <button class="btn" data-act="copy" data-j="${j.id}" data-c="${esc(c.id)}">${ic("copy")}Copy post text</button></div>
       </div></div>`;
   } else if (D.sig !== sig) $("#stage").innerHTML = stage;
   D.sig = sig;
-  put($("#dposts"), postPills(c));
+  if ($("#dposts")) put($("#dposts"), postPills(c));
 }
 $("#clipdlg").addEventListener("close", () => { $("#clipdlg").innerHTML = ""; D.jid = null; });
 $("#clipdlg").addEventListener("click", e => { if (e.target === e.currentTarget) e.currentTarget.close(); });
@@ -2743,6 +2786,18 @@ document.addEventListener("click", async e => {
       toast("Recording stopped. Clips already made are kept.", "ok");
       api(`/api/live/${d.j}/stop`, {method:"POST"}).catch(e => toast(e.message, "bad")).finally(tick); return;
     }
+    if (a === "sgclip") {
+      b.disabled = true; const was = b.innerHTML; b.innerHTML = "Preparing…";
+      let c; try { c = await send(`/api/jobs/${d.j}/suggestions/${d.s}/clip`, {}); } finally { b.disabled = false; b.innerHTML = was; }
+      await tick();
+      toast("Set the clip up, then press Make clip.", "ok");
+      return openClip(d.j, c.id);
+    }
+    if (a === "sgdel") {
+      if (!await ask("Delete this suggestion?", "Its kept piece of the stream is deleted too. This can't be undone.", "Delete", true)) return;
+      await api(`/api/jobs/${d.j}/suggestions/${d.s}`, {method:"DELETE"});
+      return tick();
+    }
     if (a === "decide") {
       const clip = d.c === "1";
       b.disabled = true;
@@ -2825,11 +2880,13 @@ document.addEventListener("click", async e => {
       if (body.layout === "split") {
         const j = jobOf(D.jid), c = j?.clips.find(x => x.id === D.cid);
         const boxes = D.split || c?.split || S.creators.find(x => x.id === j?.creator)?.split;
-        const doIt = async bx => { body.split = bx; try { await send(`/api/jobs/${D.jid}/clips/${D.cid}/render`, body); toast("Re-making the clip…", "ok"); tick(); } catch (x) { toast(x.message, "bad"); } };
+        const was = c?.status === "draft" ? "Making the clip…" : "Re-making the clip…";
+        const doIt = async bx => { body.split = bx; try { await send(`/api/jobs/${D.jid}/clips/${D.cid}/render`, body); toast(was, "ok"); tick(); } catch (x) { toast(x.message, "bad"); } };
         if (!boxes) return openBoxes(`/api/jobs/${D.jid}/clips/${D.cid}/frame`, j?.creator, null, s => { D.split = s; doIt(s); });
         return doIt(boxes);
       }
-      await send(`/api/jobs/${D.jid}/clips/${D.cid}/render`, body); toast("Re-making the clip…", "ok"); return tick();
+      const draft = jobOf(D.jid)?.clips.find(x => x.id === D.cid)?.status === "draft";
+      await send(`/api/jobs/${D.jid}/clips/${D.cid}/render`, body); toast(draft ? "Making the clip…" : "Re-making the clip…", "ok"); return tick();
     }
     if (a === "postnow" || a === "postqueue") {
       const accs = $$("#clipdlg [data-pacc]:checked").map(i => i.value);

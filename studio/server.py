@@ -1028,7 +1028,7 @@ def delete_my_account(request: Request, body: dict = Body(...)):
 
 @app.get("/media/{jid}/{name}")
 def media_file(jid: str, name: str, download: int = 0):
-    if not re.fullmatch(r"[\w\-]+\.(mp4|jpg)", name):
+    if not re.fullmatch(r"[\w\-]+(\.src)?\.(mp4|jpg)", name):      # .src.mp4: a draft's piece of stream, for the editor
         raise HTTPException(404)
     f = Path(_job_or_404(jid)["dir"]) / "clips" / name
     if not f.is_file():
@@ -1378,6 +1378,36 @@ def mark_point(jid: str, body: dict = Body(...)):
     if not p:
         raise HTTPException(409, "That moment is already in the list.")
     return p
+
+
+@app.post("/api/jobs/{jid}/suggestions/{sid}/clip")
+def clip_suggestion(jid: str, sid: str):
+    """Turn one of the AI's suggestions into a draft clip, during the stream or after it. Nothing is rendered
+    until the clipper presses Make clip in the editor."""
+    from . import suggest
+    job = _job_or_404(jid)
+    if not re.fullmatch(r"sg\d{1,6}", sid):
+        raise HTTPException(404, "That suggestion is gone.")
+    _throttle("clipnow:" + ctx.uid(), 6, 60, "Give it a moment: your last clips are still being made.")
+    try:
+        c = suggest.clip(job, sid)
+        return {k: v for k, v in c.items() if k != "src"}       # never a server path
+    except KeyError:
+        raise HTTPException(404, "That suggestion is gone.")
+    except ValueError as e:
+        raise HTTPException(409, str(e))
+
+
+@app.delete("/api/jobs/{jid}/suggestions/{sid}")
+def delete_suggestion(jid: str, sid: str):
+    """Delete one of the AI's suggestions and the piece of stream kept for it."""
+    from . import suggest
+    job = _job_or_404(jid)
+    try:
+        suggest.delete(job, sid)
+    except KeyError:
+        raise HTTPException(404, "That suggestion is gone.")
+    return {"ok": True}
 
 
 @app.delete("/api/live/{jid}/points/{pid}")
