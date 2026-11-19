@@ -164,4 +164,82 @@ finally:
     live.profiles.live_shared = _old
 check("a poll that finds nothing does not clear a known count", se.viewers, 7)
 
+# ---- task 2: what chat says
+tagged = "@badge-info=;badges=;display-name=Ann;user-id=11 :ann!ann@ann.tmi.twitch.tv PRIVMSG #x :KEKW that was insane"
+p = signals.parse_irc(tagged)
+check("a tagged chat line is read", (p["kind"], p["user"], p["text"]), ("msg", "11", "KEKW that was insane"))
+check("a raid notice is a notice", signals.parse_irc("@msg-id=raid;user-id=9 :tmi.twitch.tv USERNOTICE #x")["notice"], "raid")
+check("an untagged line still works", signals.parse_irc(":bob!bob@bob.tmi.twitch.tv PRIVMSG #x :hi")["user"], "bob")
+check("bots are known", (signals.is_bot("Nightbot"), signals.is_bot("my_cool_bot"), signals.is_bot("robert")), (True, True, False))
+msgs = [(f"u{i}", "KEKW") for i in range(8)] + [("u8", "lol nice"), ("u9", "what")]
+w = signals.analyze_window(msgs)
+check("convergence is the share of people sending the top word", (w["top"], round(w["convergence"], 2), w["people"]), ("kekw", 0.8, 10))
+check("reaction types count people", (w["types"]["laugh"], w["types"]["shock"]), (9, 1))
+clip = [(f"u{i}", "clip it") for i in range(3)] + [("u0", "clip it")]
+check("clip requests count distinct people", signals.analyze_window(clip)["clip_people"], 3)
+pasta = [("a", "this is a very long copied message here again"), ("b", "this is a very long copied message here again")]
+check("copypasta from fewer than 3 people is ignored", signals.analyze_window(pasta)["people"], 0)
+check("bots are ignored", signals.analyze_window([("Nightbot", "KEKW")])["people"], 0)
+check("word lists from settings", signals.word_lists({"words_laugh": "haha, xd"})["laugh"], ["haha", "xd"])
+check("empty word lists fall back to the defaults", signals.word_lists({})["hype"], signals.DEFAULT_WORDS["hype"])
+check("new settings have defaults", (creators.DEFAULTS["sig_chat_words"], creators.DEFAULTS["chat_window"]), (True, 8))
+check("chat_window is held between 5 and 10", (creators._clean({"chat_window": 1})["chat_window"], creators._clean({"chat_window": 99})["chat_window"]), (5, 10))
+check("a word list is saved as text", creators._clean({"words_clip": " a, b "})["words_clip"], "a, b")
+
+def chat_line(user, text, second=None):
+    return f"@user-id={user};display-name=N{user} :n{user}!n{user}@n{user}.tmi.twitch.tv PRIVMSG #x :{text}"
+se = session(); se.chat_on = True
+se.samples = 10 * 16000
+for i in range(6): se.take_chat_line(chat_line(100 + i, "KEKW"))
+check("tagged chat feeds the people count and the words", (len(se.chat_users[10]), len(se.chat_msgs[10])), (6, 6))
+se.samples = 200 * 16000
+se.take_chat_line(chat_line(1, "hi"))
+check("chat text is kept for 120 seconds only", sorted(se.chat_msgs), [200])
+se = session(); se.samples = 50 * 16000
+se.take_chat_line(":Nightbot!nightbot@x.tmi.twitch.tv PRIVMSG #x :Welcome")
+check("a bot never enters the people or the words", (se.chat_users, se.chat_msgs), ({}, {}))
+se.take_chat_line("@msg-id=raid;user-id=9 :tmi.twitch.tv USERNOTICE #x")
+check("a raid pauses the words for 30 seconds", se.raid_until, 80)
+se.take_chat_line(chat_line(1, "KEKW"))
+check("raid messages are not kept as reactions", se.chat_msgs, {})
+se.samples = 90 * 16000
+se.take_chat_line(chat_line(1, "KEKW"))
+check("after the raid they are kept again", list(se.chat_msgs), [90])
+se.take_chat_line("@msg-id=sub;user-id=9 :tmi.twitch.tv USERNOTICE #x")
+check("other notices are ignored", se.raid_until, 80)
+
+def talk(se, second, n, text="KEKW"):
+    se.chat_msgs[second] = [(f"p{second}_{i}", text) for i in range(n)]
+cw = session(); cw.db = calm_db[:100]
+for s_ in range(92, 100): talk(cw, s_, 1)
+r = cw.chat_window(92, 99)
+check("chat_window analyses that stretch", (r["people"], r["top"]), (8, "kekw"))
+check("a stretch with nothing in it is empty", cw.chat_window(10, 20)["people"], 0)
+cw._watch_spikes()
+check("a crowd saying one word is a spike", bool(cw.spike) and "KEKW" in cw.spike["why"] and "laugh" in cw.spike["why"], True)
+check("the spike keeps the window numbers", cw.spike["chat"]["people"], 8)
+check("the card shows the latest convergence", cw.base.get("conv"), 1.0)
+cw = session(sig_chat_words=False); cw.db = calm_db[:100]
+for s_ in range(92, 100): talk(cw, s_, 1)
+cw._watch_spikes()
+check("the setting switches it off", (cw.spike, cw.conv_hist), (None, []))
+cw = session(); cw.db = calm_db[:100]
+for s_ in range(92, 100): cw.chat_msgs[s_] = [(f"p{s_}_{i}", f"thing{s_}x word{s_}y") for i in range(1)]
+cw._watch_spikes()
+check("scattered talk is not a spike", cw.spike, None)
+cw = session(); cw.db = calm_db[:100]
+for s_ in range(92, 100): cw.chat_msgs[s_] = [(f"c{s_}", "clip it")] if s_ < 95 else []
+cw._watch_spikes()
+check("three people asking for a clip is a spike", bool(cw.spike) and "clip" in cw.spike["why"], True)
+# the rolling history of convergence
+cw = session(); cw.db = calm_db[:100]
+for s_ in range(92, 100): talk(cw, s_, 1)
+cw._watch_spikes()
+check("each analysed window adds to the convergence history", [(t, round(c, 1)) for t, c in cw.conv_hist], [(100, 1.0)])
+cw.conv_hist.append((150, 0.5))
+cw.db = calm_db[:100] + [-30.0] * 1000
+for s_ in range(1085, 1100): talk(cw, s_, 1)
+cw._watch_spikes()
+check("the history keeps only the last 15 minutes", all(t >= len(cw.db) - 900 for t, _ in cw.conv_hist) and len(cw.conv_hist) >= 1, True)
+
 print("ALL PASSED" if not fails else f"{len(fails)} failed"); sys.exit(1 if fails else 0)

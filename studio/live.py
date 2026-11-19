@@ -14,7 +14,6 @@ import numpy as np
 from . import alerts, auth, brain, config, creators, ctx, facecam, games, jobs, load, media, picks, profiles, signals, transcribe, usage
 
 # ":username!user@host PRIVMSG #channel :the message"
-_NICK = re.compile(r"(?m)^:([A-Za-z0-9_]{2,25})!")
 
 SESSIONS: dict = {}
 SEG_SEC = 6           # length of each buffer piece
@@ -22,7 +21,8 @@ PAD = 8               # seconds kept either side of a clip so it can be re-trimm
 CHECK_EVERY = 180     # look at the stream every 3 minutes...
 QUIET_MAX = 600       # ...but only ask the AI when something happened, or at most every 10 minutes when calm
 WINDOW = 240          # seconds of transcript shown to the AI per check
-CHAT_KEEP = 960       # seconds of chat names kept: the baseline reads the last 15 minutes, plus the few seconds being judged
+CHAT_WORDS_KEEP = 120  # seconds of what chat said (the words themselves) kept in memory
+CHAT_KEEP = 960      # seconds of chat names kept: the baseline reads the last 15 minutes, plus the few seconds being judged
 SR = 16000
 
 
@@ -135,6 +135,10 @@ class Session:
         self.chat = collections.Counter()   # second -> messages
         self.chat_users = {}                 # second -> the people who talked, when it can be told
         self.chat_kept = 0                   # the second this was last pruned at
+        self.chat_msgs = {}                  # second -> (person, text) for the last two minutes; memory only, never saved
+        self.raid_until = 0                  # stream second until which chat words are not kept (a raid just arrived)
+        self.words_read = 0                  # the second chat was last read for what it says
+        self.conv_hist = []                  # (second, convergence) of each chat window read, last 15 minutes
         self.chat_total = 0
         self.chat_on = False
         self.last_check = 0.0
@@ -347,7 +351,8 @@ class Session:
             try:
                 raw = socket.create_connection(("irc.chat.twitch.tv", 6697), timeout=20)
                 s = ssl.create_default_context().wrap_socket(raw, server_hostname="irc.chat.twitch.tv")
-                s.sendall(f"NICK justinfan{int(time.time()) % 90000 + 10000}\r\nJOIN #{channel}\r\n".encode())
+                # ask for the tags: they carry each person's id and the kind of notice (raid, sub)
+                s.sendall(f"CAP REQ :twitch.tv/tags twitch.tv/commands\r\nNICK justinfan{int(time.time()) % 90000 + 10000}\r\nJOIN #{channel}\r\n".encode())
                 s.settimeout(30)
                 rest = b""
                 self.chat_on = True
@@ -362,22 +367,74 @@ class Session:
                     for line in lines:
                         if line.startswith(b"PING"):
                             s.sendall(b"PONG :tmi.twitch.tv\r\n")
-                        elif b" PRIVMSG #" in line:
-                            with self.lock:
-                                second = int(self.samples / SR)
-                                self.chat[second] += 1
-                                self.chat_total += 1
-                                # how many different people, not how many messages: a wave of the same
-                                # emotes is not a crowd getting excited
-                                who = _NICK.findall(line.decode("utf-8", "replace"))
-                                if who:
-                                    self.chat_users.setdefault(second, set()).add(who[0].lower())
-                                    self.chat_kept = _trim_names(self.chat_users, second, self.chat_kept)
+                        elif b" PRIVMSG #" in line or b" USERNOTICE " in line:
+                            self.take_chat_line(line.decode("utf-8", "replace"))
                 s.close()
             except Exception:  # noqa: BLE001
                 pass
             self.chat_on = False
             self.stop_flag.wait(5)
+
+    def take_chat_line(self, text):
+        """One line from Twitch chat. Counts it (messages and different people), and keeps what was said for the
+        last two minutes, in memory only: the words are never written anywhere. Bots are skipped, a raid pauses
+        the words for 30 seconds (a raid flood is not a reaction), and other notices (subs, gifts) are ignored."""
+        p = signals.parse_irc(text)
+        if not p:
+            return
+        with self.lock:
+            second = int(self.samples / SR)
+            if p["kind"] == "notice":
+                if p["notice"] == "raid":
+                    self.raid_until = second + 30
+                return
+            if signals.is_bot(p.get("name") or p["user"]):
+                return
+            self.chat[second] += 1
+            self.chat_total += 1
+            # how many different people, not how many messages: a wave of the same
+            # emotes is not a crowd getting excited
+            if p["user"]:
+                self.chat_users.setdefault(second, set()).add(p["user"])
+                self.chat_kept = _trim_names(self.chat_users, second, self.chat_kept)
+            if self.settings.get("sig_chat_words", True) and p["user"] and second >= self.raid_until:
+                self.chat_msgs.setdefault(second, []).append((p["user"], p["text"]))
+                for t in [t for t in self.chat_msgs if t < second - CHAT_WORDS_KEEP]:
+                    del self.chat_msgs[t]
+
+    def chat_window(self, t0, t1):
+        """What chat said from second t0 to t1 (included), see signals.analyze_window."""
+        with self.lock:
+            msgs = [m for t in range(int(t0), int(t1) + 1) for m in self.chat_msgs.get(t, ())]
+        return signals.analyze_window(msgs, signals.word_lists(self.settings))
+
+    def _watch_chat_words(self, n):
+        """Every few seconds, read what the last stretch of chat said. A crowd sending the same word, or three
+        people asking for a clip, is a jump on its own. Every reading is also kept (second, convergence) for the
+        last 15 minutes, so that a later step can find when chat calmed down."""
+        if not self.settings.get("sig_chat_words", True) or n < 60:
+            return
+        win = max(5, min(10, int(self.settings.get("chat_window", 8) or 8)))
+        if n - self.words_read < win:
+            return
+        self.words_read = n
+        w = self.chat_window(n - win, n - 1)
+        self.conv_hist.append((n, w["convergence"]))
+        while self.conv_hist and self.conv_hist[0][0] < n - 900:
+            self.conv_hist.pop(0)
+        jz = float(self.settings.get("jump_z", 3.5))
+        why, strength = None, 0.0
+        if w["clip_people"] >= 3:
+            why, strength = f"Chat: {w['clip_people']} people asked for a clip", min(1.0, w["clip_people"] / 6)
+        elif w["people"] >= 5 and w["convergence"] >= 0.5:
+            said = round(w["convergence"] * w["people"])
+            kinds = [k for k, c in sorted(w["types"].items(), key=lambda kv: -kv[1]) if c >= 0.5 * w["people"] and k != "clip"]
+            why = f"Chat: {said} people said {w['top'].upper()}" + (f" ({kinds[0]})" if kinds else "")
+            strength = w["convergence"]
+        if why and not self.spike and n - self.last_spike >= self.AUTO_GAP:
+            self.spike = {"t": float(n - 3), "why": why, "z": jz + 2 * strength, "chat": w}
+            self.last_spike = n
+            self.spikes += 1
 
     def _chat_spike(self, s, e):
         """True if chat was clearly busier than usual during (and just after) these seconds: the busiest five seconds anywhere in s to
@@ -480,7 +537,14 @@ class Session:
         last few seconds), and mark a moment when the last five seconds jump a set percentage above it. Nothing is
         sent yet: the AI gets that moment once its transcript is ready, with the half minute before it."""
         if self._baseline():
-            return self._watch_spikes_z()
+            self._watch_spikes_z()
+        else:
+            self._watch_spikes_old()
+        self._watch_chat_words(len(self.db))
+        if self.conv_hist:
+            self.base["conv"] = round(self.conv_hist[-1][1], 2)     # the card shows how much chat agrees
+
+    def _watch_spikes_old(self):
         with self.lock:
             n = len(self.db)
             if n < 60:

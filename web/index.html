@@ -935,6 +935,9 @@ const navIc = (n, v) => ic(S.view === v && I[n + "_f"] ? n + "_f" : n);
 const fmt = s => { s = Math.max(0, Math.round(s)); const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60); return (h ? h + ":" + String(m).padStart(2, "0") : m) + ":" + String(s % 60).padStart(2, "0"); };
 const clock = t => new Date(t * 1000).toLocaleString([], {weekday:"short", hour:"2-digit", minute:"2-digit"});
 const when = t => new Date(t * 1000).toLocaleString([], {month:"short", day:"numeric", hour:"2-digit", minute:"2-digit"});
+// the words chat is read for, shown as the placeholders in Setup (the same lists signals.py starts from)
+const DEFAULT_WORDS = {laugh: "lul, kekw, lol, lmao, lmfao, haha, omegalul, icant, xd", shock: "wtf, omg, no way, what, holy, monkas, d:",
+  hype: "pog, pogchamp, poggers, lets go, letsgo, w, ez, clutch, gg", clip: "clip, clip it, clip that, clipped, clipit", negative: "l, cringe, boring, ratio, mid, trash"};
 const opts = (map, val) => Object.entries(map).map(([k, v]) => `<option value="${esc(k)}"${String(k) === String(val) ? " selected" : ""}>${esc(v)}</option>`).join("");
 
 async function api(path, opt) {
@@ -1910,7 +1913,15 @@ function drawCreatorForm() {
       </div></div>
     <div class="card"><h2>Moment finding</h2><p class="help">How a sudden jump in the stream is noticed.</p>
       <div class="fields"><label class="sw span"><input type="checkbox" data-k="sig_baseline" ${c.sig_baseline === false ? "" : "checked"}><span>Use the new baseline<small>Compare loudness and chatters with the last 15 minutes of this stream, and keep only the strongest moments each hour</small></span></label>
-        <label class="f">How unusual a jump must be<input data-k="jump_z" type="number" step="0.5" min="2" max="8" value="${c.jump_z ?? 3.5}"></label></div></div>
+        <label class="f">How unusual a jump must be<input data-k="jump_z" type="number" step="0.5" min="2" max="8" value="${c.jump_z ?? 3.5}"></label>
+        <label class="sw span"><input type="checkbox" data-k="sig_chat_words" ${c.sig_chat_words === false ? "" : "checked"}><span>Read what chat says<small>A crowd sending the same word or emote, or several people asking for a clip, counts as a jump. Bots, copied messages and raids are ignored.</small></span></label>
+        <label class="f">Chat window (seconds)<input data-k="chat_window" type="number" min="5" max="10" value="${c.chat_window ?? 8}"></label>
+        <label class="f">Laugh words<input data-k="words_laugh" value="${esc(c.words_laugh || "")}" placeholder="${esc(DEFAULT_WORDS.laugh)}"></label>
+        <label class="f">Shock words<input data-k="words_shock" value="${esc(c.words_shock || "")}" placeholder="${esc(DEFAULT_WORDS.shock)}"></label>
+        <label class="f">Hype words<input data-k="words_hype" value="${esc(c.words_hype || "")}" placeholder="${esc(DEFAULT_WORDS.hype)}"></label>
+        <label class="f">Clip words<input data-k="words_clip" value="${esc(c.words_clip || "")}" placeholder="${esc(DEFAULT_WORDS.clip)}"></label>
+        <label class="f">Negative words<input data-k="words_negative" value="${esc(c.words_negative || "")}" placeholder="${esc(DEFAULT_WORDS.negative)}"></label>
+        <small class="sub span" style="font-weight:400">Separate words with commas. Left empty, the words shown are used.</small></div></div>
     <div class="card"><h2>Clips</h2><p class="help">How this creator's clips look.</p>
       <div class="fields"><label class="sw span"><input type="checkbox" data-k="captions" data-caption-toggle ${c.captions === false ? "" : "checked"}>Generate captions</label>
         <label class="f">Caption style<select data-k="style" data-caption-style ${c.captions === false ? "disabled" : ""}>${opts(S.status.styles, c.style)}</select></label>

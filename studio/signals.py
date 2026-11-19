@@ -1,5 +1,7 @@
 """The maths behind finding moments in a live stream. Nothing here reads files or the network, so every part can be
 tested on its own. live.py feeds it what it hears and sees; it answers with numbers."""
+import re
+
 import numpy as np
 
 MAD_TO_SD = 1.4826          # turns a median distance into something that reads like a standard deviation
@@ -57,3 +59,88 @@ class HourlyTop:
             self.sent[weakest] = (now, score)
             return True
         return False
+
+
+# ---------------------------------------------------------------- what chat says
+DEFAULT_WORDS = {
+    "laugh": ["lul", "kekw", "lol", "lmao", "lmfao", "haha", "omegalul", "icant", "xd"],
+    "shock": ["wtf", "omg", "no way", "what", "holy", "monkas", "d:"],
+    "hype": ["pog", "pogchamp", "poggers", "lets go", "letsgo", "w", "ez", "clutch", "gg"],
+    "clip": ["clip", "clip it", "clip that", "clipped", "clipit"],
+    "negative": ["l", "cringe", "boring", "ratio", "mid", "trash"],
+}
+# Chat helpers that talk on their own: their lines are not people reacting.
+BOTS = {"nightbot", "streamelements", "streamlabs", "moobot", "fossabot", "wizebot", "soundalerts", "sery_bot",
+        "botrixoficial", "kofistreambot", "streamstickers", "commanderroot"}
+_TAGS = re.compile(r"^@(\S+) ")
+_NICK = re.compile(r":([A-Za-z0-9_]{1,25})!")
+
+
+def is_bot(name):
+    n = (name or "").lower()
+    return n in BOTS or n.endswith("bot")
+
+
+def parse_irc(line):
+    """Read one Twitch chat line. A message gives the person (their id when Twitch sends tags, otherwise their
+    nickname) and the text; a USERNOTICE (raid, sub, gift) gives only what kind it is. Anything else is None."""
+    tags = {}
+    m = _TAGS.match(line)
+    if m:
+        tags = dict(kv.split("=", 1) if "=" in kv else (kv, "") for kv in m.group(1).split(";"))
+        line = line[m.end():]
+    if " USERNOTICE " in line:
+        return {"kind": "notice", "user": tags.get("user-id", ""), "text": "", "notice": tags.get("msg-id", "")}
+    if " PRIVMSG #" not in line:
+        return None
+    nick = _NICK.search(line)
+    name = tags.get("display-name") or (nick.group(1) if nick else "")
+    after = line.split(" PRIVMSG #", 1)[1]
+    text = after.split(" :", 1)[1] if " :" in after else ""
+    return {"kind": "msg", "user": tags.get("user-id") or (nick.group(1).lower() if nick else ""), "name": name,
+            "text": text.strip(), "notice": ""}
+
+
+def _words(text):
+    return re.findall(r"[a-z0-9:]+", text.lower())
+
+
+def analyze_window(msgs, words=None):
+    """What a stretch of chat says, counted in people: how many talked, the share who sent the most common word
+    (convergence), how many people each reaction type covers, and how many asked for a clip. Long messages
+    copied by fewer than three people, and bots, are left out."""
+    words = words or DEFAULT_WORDS
+    long_by = {}
+    for user, text in msgs:
+        if len(text.split()) > 6:
+            long_by.setdefault(text.strip().lower(), set()).add(user)
+    kept = [(u, t) for u, t in msgs if not (len(t.split()) > 6 and len(long_by.get(t.strip().lower(), ())) < 3)]
+    people = {}
+    for u, t in kept:
+        if not u or is_bot(u):
+            continue
+        people.setdefault(u, []).append(t)
+    out = {"people": len(people), "convergence": 0.0, "top": "", "types": {k: 0 for k in words}, "clip_people": 0}
+    if not people:
+        return out
+    seen = {}
+    for u, texts in people.items():
+        toks = set(w for t in texts for w in _words(t))
+        for w in toks:
+            seen[w] = seen.get(w, 0) + 1
+        joined = " " + " ".join(" ".join(_words(t)) for t in texts) + " "
+        for kind, lst in words.items():
+            if any((" " + p.lower() + " ") in joined or p.lower() in toks for p in lst):
+                out["types"][kind] += 1
+    top = max(seen, key=seen.get)
+    out.update(top=top, convergence=seen[top] / len(people), clip_people=out["types"].get("clip", 0))
+    return out
+
+
+def word_lists(settings):
+    """The five reaction word lists: the creator's own (comma separated) or the defaults."""
+    out = {}
+    for kind, default in DEFAULT_WORDS.items():
+        raw = str((settings or {}).get(f"words_{kind}") or "").strip()
+        out[kind] = [w.strip().lower() for w in raw.split(",") if w.strip()] or list(default)
+    return out
