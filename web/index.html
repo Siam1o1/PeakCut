@@ -2600,11 +2600,12 @@ document.addEventListener("click", async e => {
     if (a === "delcreator") {
       const c = S.creators.find(x => x.id === (d.c || creatorId())); if (!c) return;
       const ans = await askDeleteCreator(c); if (!ans) return;
-      const r = await api(`/api/creators/${encodeURIComponent(c.id)}${ans.withClips ? "?with_clips=1" : ""}`, {method:"DELETE"});
+      b.disabled = true;
+      let r; try { r = await api(`/api/creators/${encodeURIComponent(c.id)}${ans.withClips ? "?with_clips=1" : ""}`, {method:"DELETE"}); } finally { b.disabled = false; }
       S.creators = S.creators.filter(x => x.id !== c.id);
       if (ans.withClips) S.jobs = S.jobs.filter(j => j.creator !== c.id); else S.jobs.forEach(j => { if (j.creator === c.id) j.creator = null; });
       if (creatorId() === c.id) go("overview"); else render();
-      toast(ans.withClips ? "Creator deleted, with their clips." : `Creator deleted. ${r.kept ? r.kept + " video" + (r.kept === 1 ? "" : "s") + " kept under All videos." : ""}`, "ok");
+      toast(ans.withClips ? "Creator deleted, with their clips." : "Creator deleted." + (r.kept ? ` ${r.kept} video${r.kept === 1 ? "" : "s"} kept under All videos.` : ""), "ok");
       return tick();
     }
     if (a === "delaccount") {

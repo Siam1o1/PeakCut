@@ -67,21 +67,81 @@ with ctx.as_user(auth.LOCAL_ID):
     jobs.save(lj)
     s = live.Session(lj, creators.get(d))
     live.SESSIONS[lj["id"]] = s
-import studio.account as account
-_real_sleep = time.sleep
-account.time = type("T", (), {"sleep": staticmethod(lambda x: _real_sleep(0.01))})   # do not wait 20 real seconds
+import studio.account as account, types
+_real_sleep, naps = time.sleep, []
+account.time = types.SimpleNamespace(sleep=lambda x: (naps.append(x), _real_sleep(0.05)), time=time.time)   # 40 naps of 0.05 s, not 20 s
 r = c.delete(f"/api/creators/{d}", headers=H)
 check("a recording that will not finish gives 409", (r.status_code, r.json().get("detail")), (409, "The recording is stopping. Try again in a moment."))
 check("the recording was told to stop", s.user_stopped, True)
 check("the creator is still there after the 409", creators.get(d) is not None, True)
 with ctx.as_user(auth.LOCAL_ID):
     check("auto-watch is off so nothing restarts it", (creators.get(d)["auto_watch"], live.active_for(d)), (False, None))
-threading.Timer(0.2, lambda: setattr(s, "finished", True)).start()
+naps.clear()
 r = c.delete(f"/api/creators/{d}", headers=H)
-check("once the recording has wrapped up the delete works", (r.status_code, creators.get(d) is None, lj["creator"]), (200, True, None))
+check("a recording already told to stop answers 409 at once, without waiting again", (r.status_code, naps), (409, []))
 live.SESSIONS.pop(lj["id"], None)
+
+d2 = new_creator("Streamer Two")
 with ctx.as_user(auth.LOCAL_ID):
-    check("nothing can restart a recording for them", live.active_for(d), None)
+    lj2 = jobs.create({"type": "live", "url": "https://www.twitch.tv/q", "name": "q live"}, {}, enqueue=False, creator=d2, kind="live")
+    lj2.update(mode="pick", points=[], cuts=[], status="live"); jobs.save(lj2)
+    s2 = live.Session(lj2, creators.get(d2)); live.SESSIONS[lj2["id"]] = s2
+threading.Timer(0.3, lambda: setattr(s2, "finished", True)).start()      # well inside the 2 s the stub waits
+r = c.delete(f"/api/creators/{d2}", headers=H)
+check("once the recording has wrapped up the delete works", (r.status_code, creators.get(d2) is None, lj2["creator"]), (200, True, None))
+live.SESSIONS.pop(lj2["id"], None)
+with ctx.as_user(auth.LOCAL_ID):
+    check("nothing can restart a recording for them", live.active_for(d2), None)
+
+# ---- a recording that has already ended on its own is waited for, not stopped again
+d3 = new_creator("Ended Already")
+with ctx.as_user(auth.LOCAL_ID):
+    lj3 = jobs.create({"type": "live", "url": "https://www.twitch.tv/e", "name": "e live"}, {}, enqueue=False, creator=d3, kind="live")
+    lj3.update(mode="pick", points=[], cuts=[], status="live"); jobs.save(lj3)
+    s3 = live.Session(lj3, creators.get(d3)); s3.ended = True; live.SESSIONS[lj3["id"]] = s3
+threading.Timer(0.3, lambda: (lj3.update(status="done"), setattr(s3, "finished", True))).start()    # wrapping up marks the video done
+r = c.delete(f"/api/creators/{d3}", headers=H)
+check("an ended recording keeps its own wording and is not stopped again", (r.status_code, s3.user_stopped, s3.end_note), (200, False, "Stream ended"))
+live.SESSIONS.pop(lj3["id"], None)
+
+# ---- work still writing into a finished video's folder blocks the delete, and nothing is moved
+def busy_case(name, mod):
+    cid = new_creator(name)
+    with ctx.as_user(auth.LOCAL_ID):
+        j = jobs.create({"type": "url", "url": "https://example.com/b", "name": "b"}, {}, enqueue=False, creator=cid)
+        j.update(status="done", clips=[], cuts=[], points=[]); mod(j)
+        make_video(Path(j["dir"]) / "source.mp4", seconds=1, size="320x180"); jobs.save(j)
+    before = j["dir"]
+    r = c.delete(f"/api/creators/{cid}", headers=H)
+    check(name + " blocks the delete", (r.status_code, r.json().get("detail"), creators.get(cid) is not None, j["dir"], Path(before, "source.mp4").is_file(), j["creator"]),
+          (409, "One of this creator's videos is still being made. Wait for it to finish first.", True, before, True, cid))
+busy_case("a clip being re-made", lambda j: j.update(clips=[{"id": "k", "status": "rendering"}]))
+busy_case("a clip waiting to render", lambda j: j.update(clips=[{"id": "k", "status": "queued"}]))
+busy_case("a cut being made", lambda j: j.update(cuts=[{"id": "u", "status": "making"}]))
+busy_case("a kept stream being saved", lambda j: j.update(points=[{"id": "pt1", "hold": {"status": "saving"}}]))
+busy_case("a kept stream still waiting", lambda j: j.update(points=[{"id": "pt1", "hold": {"status": "waiting"}}]))
+
+# ---- the destination already exists: refuse, leave everything where it was
+e = new_creator("Clash")
+with ctx.as_user(auth.LOCAL_ID):
+    ej = jobs.create({"type": "url", "url": "https://example.com/e", "name": "e"}, {}, enqueue=False, creator=e)
+    make_video(Path(ej["dir"]) / "source.mp4", seconds=1, size="320x180"); ej.update(status="done"); jobs.save(ej)
+    clash = config.user_dir(auth.LOCAL_ID) / "jobs" / Path(ej["dir"]).name
+    clash.mkdir(parents=True)
+old_dir = ej["dir"]
+r = c.delete(f"/api/creators/{e}", headers=H)
+check("a folder already at the destination gives 409 and moves nothing", (r.status_code, ej["dir"], Path(old_dir, "source.mp4").is_file(), ej["creator"], creators.get(e) is not None), (409, old_dir, True, e, True))
+
+# ---- a job that is already in the owner's own folder is kept without moving
+f2 = new_creator("Already Home")
+with ctx.as_user(auth.LOCAL_ID):
+    hj = jobs.create({"type": "url", "url": "https://example.com/h", "name": "h"}, {}, enqueue=False, creator=f2)
+    home_dir = config.user_dir(auth.LOCAL_ID) / "jobs" / hj["id"]
+    home_dir.mkdir(parents=True, exist_ok=True)
+    import shutil; shutil.rmtree(hj["dir"]); hj["dir"] = str(home_dir)
+    make_video(home_dir / "source.mp4", seconds=1, size="320x180"); hj.update(status="done"); jobs.save(hj)
+r = c.delete(f"/api/creators/{f2}", headers=H)
+check("a job already in the owner's folder is kept in place", (r.status_code, r.json().get("kept"), hj["dir"], (home_dir / "source.mp4").is_file(), hj["creator"]), (200, 1, str(home_dir), True, None))
 
 # ---- 6: someone else's creator
 with ctx.as_user("u_other"):

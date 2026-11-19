@@ -2,6 +2,7 @@
 
 Nothing here can be undone, so every caller asks the person first. Work in progress is never pulled out from under
 itself: a video still being made, or a stream still being recorded, has to finish or be stopped first."""
+import os
 import shutil
 import time
 import zipfile
@@ -16,7 +17,14 @@ class Busy(Exception):
 
 def _busy(job) -> bool:
     s = live.SESSIONS.get(job["id"])                  # a recording that has wrapped up no longer counts
-    return job["status"] in ("queued", "running", "live") or bool(s and not s.finished)
+    if job["status"] in ("queued", "running", "live") or bool(s and not s.finished):
+        return True
+    # a re-make, an Edit render or a Live Transcriber cut keeps the video "done" while ffmpeg writes into its folder
+    if any(c.get("status") in ("queued", "rendering") for c in job.get("clips", [])):
+        return True
+    if any(c.get("status") == "making" for c in job.get("cuts", [])):
+        return True
+    return any((p.get("hold") or {}).get("status") in ("waiting", "saving") for p in job.get("points", []))
 
 
 # ---------------------------------------------------------------- clips and videos
@@ -116,20 +124,27 @@ def _rehome(job, uid) -> None:
     """Move a video or recording out of a creator's folder into its owner's own folder, keeping every file."""
     old = Path(job["dir"])
     new = config.user_dir(uid) / "jobs" / old.name
-    new.parent.mkdir(parents=True, exist_ok=True)
-    shutil.move(str(old), str(new))
+    real = jobs._jobs.get(job["id"], job)             # the registered job itself, so the page and later renders see the move
+    if old.resolve() != new.resolve():                # already in the owner's own folder: nothing to move
+        if new.exists():
+            raise Busy("A folder with the same name already exists. Nothing was moved.")
+        new.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            os.replace(old, new)                      # a plain rename: never a slow copy that could be cut half-way
+        except OSError:
+            raise Busy("A file of this creator's is in use. Try again in a moment.")
     o, n = str(old), str(new)
     fix = lambda p: (n + p[len(o):]) if isinstance(p, str) and p.startswith(o) else p
-    real = jobs._jobs.get(job["id"], job)             # the registered job itself, so the page and later renders see the move
-    real["dir"] = n
-    if real.get("source_path"):
-        real["source_path"] = fix(real["source_path"])
-    if isinstance(real.get("source"), dict) and real["source"].get("path"):
-        real["source"]["path"] = fix(real["source"]["path"])
-    for c in real.get("clips", []):
-        if c.get("src"):
-            c["src"] = fix(c["src"])
-    real["creator"] = None
+    with jobs._lock:
+        real["dir"] = n
+        if real.get("source_path"):
+            real["source_path"] = fix(real["source_path"])
+        if isinstance(real.get("source"), dict) and real["source"].get("path"):
+            real["source"]["path"] = fix(real["source"]["path"])
+        for c in real.get("clips", []):
+            if c.get("src"):
+                c["src"] = fix(c["src"])
+        real["creator"] = None
     jobs.save(real)
 
 
@@ -145,7 +160,9 @@ def delete_creator(cid: str, with_clips: bool = False) -> dict:
     s = next((x for x in live.SESSIONS.values()
               if x.job.get("creator") == cid and x.job.get("user") == ctx.uid() and not x.finished), None)
     if s:
-        if not s.user_stopped:
+        if s.user_stopped:                                # already asked to stop, and still wrapping up
+            raise Busy("The recording is stopping. Try again in a moment.")
+        if not s.ended:
             s.stop("Stopped because the creator was deleted")
         for _ in range(40):                               # up to 20 s for the recording to wrap up
             if s.finished:
