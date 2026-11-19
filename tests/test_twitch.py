@@ -157,11 +157,13 @@ calls["post"] = 0
 check("a 401 renews the token and tries once more", (twitch.Helix("cid", "sec", get=g401, post=post).user_id("x"), calls["post"]), ("42", 2))
 check("a 401 that stays gives nothing", twitch.Helix("cid", "sec", get=lambda *a, **k: R({}, 401), post=post).user_id("x"), None)
 
-# pick mode lists it straight away, like a hand mark
+# pick mode lists it like a hand mark, once its clip edges are settled (the transcript has reached them)
 sp = live_session(mode="pick"); sp.samples = 16000 * 400
 sp._helix = twitch.Helix("cid", "sec", get=get, post=post)
 CLIPS[:] = [ago("a", "u1", 100), ago("b", "u2", 80)]
 sp._poll_viewer_clips()
+check("pick mode waits for the transcript to reach the end", sp.job["points"], [])
+sp.t_done = 1000; sp._flush_viewer_points()
 check("pick mode lists it as from viewers", [p["from"] for p in sp.job["points"]], ["viewers"])
 
 # failures are written once each

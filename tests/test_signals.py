@@ -356,4 +356,43 @@ fb._ai_check((70, 130), "Jump: x", 5.0, peak=100)
 _brain.judge_transcript = _old
 check("the fallback lists a point from the edges", len(fb.job["points"]) == 1 and fb.job["points"][0]["end"] - fb.job["points"][0]["start"] >= 10, True)
 
+# ---- timing fixes: the moment is always inside; calm means after the reaction; wait until settled
+s_, e_ = signals.clip_edges(100, [{"s": 30, "e": 33}], 15, 60)
+check("a setup line far back still leaves the moment inside", (s_ <= 100 <= e_, e_ - s_ <= 60), (True, True))
+s_, e_ = signals.clip_edges(1, [], 15, 60)
+check("at the start of a stream the clip is still min_len long", (s_, e_ - s_ >= 15), (0.0, True))
+s_, e_ = signals.clip_edges(16, lines, min_len=10, max_len=12, calm_after=40)
+check("a far calm point cannot push the moment out", s_ <= 16 <= e_, True)
+cd = session(); cd.lag = 5; cd.settings["chat_window"] = 8
+cd.conv_hist = [(60, .1), (68, .1), (76, .1), (84, .1), (92, .1), (100, .1), (104, .1), (112, .9), (120, .9), (128, .1)]
+check("calm_after skips a calm reading from before the reaction", cd._calm_after(101), 128)
+cd.conv_hist = [(60, .1), (68, .1), (76, .1), (84, .1), (92, .1), (100, .1), (104, .1), (112, .9)]
+check("calm_after waits while chat is still excited", cd._calm_after(101), None)
+cd.conv_hist = [(60, .1), (68, .1), (76, .1), (84, .1), (92, .1), (100, .1), (108, .1), (116, .1)]
+check("never excited: the first window that starts after the reaction", cd._calm_after(101), 116)
+lg = session(); lg.lag = 9; lg.db = [-30.0] * 700; lg.chat_on = True
+lg.chat_users = {t_: {f"q{t_}"} for t_ in range(700)}
+lg._watch_lag(700)
+check("no pattern keeps the lag measured before", lg.lag, 9)
+# firing waits until the clip is settled
+wt = session(min_len=10, max_len=40); wt.words = tw; wt.chat_on = True; wt.lag = 5
+wt.conv_hist = [(60, .1), (68, .1), (76, .1), (84, .1), (92, .1), (100, .1), (108, .9), (116, .9)]
+wt.t_done = 130
+check("not settled while chat has not calmed", wt._settled(101)[0], False)
+wt.conv_hist.append((124, .1)); wt.t_done = 129
+check("not settled before the transcript reaches the end", wt._settled(101)[0], False)
+wt.t_done = 200
+check("settled once chat calmed and the transcript is there", wt._settled(101)[0], True)
+wt.conv_hist = wt.conv_hist[:-1]; wt.t_done = 200
+check("or when the clip is as long as it may be", wt._settled(101)[0], True)
+nt = session(sig_timing=False); nt.t_done = 121
+check("timing off: the old t + 20 trigger", (nt._settled(101)[0], session(sig_timing=False)._settled(101)[0]), (True, False))
+vp = session(min_len=10, max_len=40); vp.pick = True; vp.words = tw; vp.chat_on = True; vp.lag = 5
+vp.conv_hist = [(60, .1), (68, .1), (76, .1), (84, .1), (92, .1), (100, .1), (108, .9), (116, .9)]
+vp.t_done = 130; vp.job["points"] = []
+vp._viewer_burst({"t": 101, "people": 3})
+check("a viewer burst waits for settled edges", (len(vp.job["points"]), len(vp.viewer_points)), (0, 1))
+vp.ended = True; vp._flush_viewer_points()
+check("and is listed anyway once the stream ended", len(vp.job["points"]), 1)
+
 print("ALL PASSED" if not fails else f"{len(fails)} failed"); sys.exit(1 if fails else 0)

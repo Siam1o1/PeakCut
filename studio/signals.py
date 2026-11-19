@@ -210,11 +210,13 @@ def clip_edges(peak, lines, min_len, max_len, calm_after=None, lead_min=3):
     """Where a clip around `peak` starts and ends: at the start of the sentence that sets it up, and at the end of
     the sentence after chat has calmed down, kept within min_len and max_len."""
     starts = [l["s"] for l in lines if l["s"] <= peak - lead_min]
-    start = max(starts) if starts else peak - lead_min
+    start = max(0.0, max(starts) if starts else peak - lead_min)
+    # the end is decided first and is never before the moment itself
     want_end = max(peak + 2, calm_after if calm_after is not None else peak + 2)
     ends = [l["e"] for l in lines if l["e"] >= want_end]
     end = min(ends) if ends else want_end
-    end = min(max(end, start + min_len), start + max_len)
+    end = min(end, max(start + max_len, peak + 2))
+    start = max(start, end - max_len)          # a setup sentence far back is dropped, the moment stays inside
     if end - start < min_len:
-        start = end - min_len
-    return round(max(0.0, start), 2), round(end, 2)
+        end = start + min_len                  # too short: run on longer (the start is already at its sentence or 0)
+    return round(start, 2), round(end, 2)

@@ -169,6 +169,7 @@ class Session:
         self.clock0 = None            # unix time the first audio arrived: viewers' clip times are counted from it
         self.viewer_clips = {}        # clip id -> its times, for the Twitch clips already seen
         self.viewer_used = set()      # clips already part of a burst that was reported
+        self.viewer_points = []       # pick mode: viewer bursts waiting until their clip edges are settled
         self.viewer_queue = []        # bursts waiting for the next free moment to be sent (clip mode)
         self._helix = None
         self._helix_user = None
@@ -330,12 +331,24 @@ class Session:
                                   "z": 10 + b["people"], "viewer_clips": b["people"]}
                     self.spikes += 1
 
+    def _flush_viewer_points(self):
+        """List the viewer bursts whose clip edges are settled (or all of them once the stream has ended)."""
+        for b in list(self.viewer_points):
+            ready, start, end = self._settled(b["t"])
+            if ready or self.ended:
+                self.viewer_points.remove(b)
+                picks.add_point(self, {"start": start, "end": end, "peak": b["t"], "score": 0,
+                                       "reason": f"Viewers clipped this ({b['people']} people)", "from": "viewers"})
+
     def _viewer_burst(self, b):
         why = f"Viewers clipped this ({b['people']} people)"
         if self.pick:      # like a mark made by hand: always listed
-            start, end = self._edges(b["t"]) if self._timing() else (max(0.0, b["t"] - 30), b["t"] + 10)
-            picks.add_point(self, {"start": start, "end": end, "peak": b["t"], "score": 0,
-                                   "reason": why, "from": "viewers"})
+            if self._timing():     # listed once its start and end are settled, see _flush_viewer_points
+                self.viewer_points.append(b)
+                self._flush_viewer_points()
+            else:
+                picks.add_point(self, {"start": max(0.0, b["t"] - 30), "end": b["t"] + 10, "peak": b["t"], "score": 0,
+                                       "reason": why, "from": "viewers"})
         else:              # sent to the AI like a jump, and strong enough to rank high; waits if another jump is pending
             self.viewer_queue.append(b)
             self._flush_viewer_queue()
@@ -632,6 +645,7 @@ class Session:
         last few seconds), and mark a moment when the last five seconds jump a set percentage above it. Nothing is
         sent yet: the AI gets that moment once its transcript is ready, with the half minute before it."""
         self._flush_viewer_queue()
+        self._flush_viewer_points()
         if self._baseline():
             self._watch_spikes_z()
         else:
@@ -714,20 +728,38 @@ class Session:
             return
         self.lag_at = n
         with self.lock:
-            loud = 10 ** (np.array(self.db[-900:], dtype=np.float64) / 20)
+            loud = 10 ** (np.array(self.db[max(0, n - 900):n], dtype=np.float64) / 20)   # the same seconds as the chat series
         series, _ = self._chat_series(n - 1, 900)
         if series:
-            self.lag = signals.measure_lag(loud, series)
+            self.lag = signals.measure_lag(loud, series, default=self.lag)    # no pattern found: keep what was measured
 
     def _calm_after(self, t):
         """The first second after t when chat agreed no more than usual again (convergence z under 1), or None
         when there are no chat readings."""
         hist = list(self.conv_hist)
         base = [c for s, c in hist if s <= t] or [c for _, c in hist]
-        for s, c in hist:
-            if s > t and signals.robust_z(base, c, floor=0.1) < 1:
+        win = max(5, min(10, int(self.settings.get("chat_window", 8) or 8)))
+        react = t + self.lag                    # chat reacts a few seconds after the moment: look only from there on
+        calm = lambda c: signals.robust_z(base, c, floor=0.1) < 1
+        up = next((i for i, (s, c) in enumerate(hist) if s >= react and not calm(c)), None)
+        if up is not None:                      # chat did get excited: calm is the first reading after that
+            return next((s for s, c in hist[up + 1:] if calm(c)), None)
+        for s, c in hist:                       # never excited: the first window that starts after the reaction time
+            if s - win > react and calm(c):
                 return s
         return None
+
+    def _settled(self, t):
+        """(ready, start, end): whether a moment at second t can be sent now. The transcript must reach five seconds
+        past the end, and chat must have calmed down after the reaction (or there is no chat, or the clip is
+        already as long as it may be)."""
+        start, end = self._edges(t)
+        if not self._timing():
+            return self.t_done >= t + self.AUTO_AFTER, start, end
+        has_chat = self.settings.get("sig_chat_words", True) and (self.chat_on or self.chat_total)
+        calm = self._calm_after(t) is not None
+        ok = self.t_done >= end + 5 and (calm or not has_chat or self.t_done >= start + float(self.settings["max_len"]) + 5)
+        return ok, start, end
 
     def _edges(self, t):
         """(start, end) of a clip for a moment at second t. With smart edges: from the sentence that sets it up to
@@ -1035,7 +1067,7 @@ class Session:
                 elif said and (self.t_done >= said["t"] + self.SAID_AFTER or (self.ended and not busy)):
                     self.said = None
                     self._ask_ai((said["t"] - self.SAID_BEFORE, said["t"] + self.SAID_AFTER), said["why"])
-                elif sp and (self.t_done >= sp["t"] + self.AUTO_AFTER or (self.ended and not busy)):
+                elif sp and (self._settled(sp["t"])[0] or (self.ended and not busy)):
                     self.spike = None
                     if self._timing():
                         a, b = self._edges(sp["t"])
