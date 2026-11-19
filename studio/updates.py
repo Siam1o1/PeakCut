@@ -54,6 +54,21 @@ def current() -> str:
 RUNNING = current()       # the code in memory: what PeakCut is actually running until it is restarted
 
 
+def contains(here: str, top: str, root=None) -> bool:
+    """Does the version here already include GitHub's newest commit? True when this copy was updated and then got
+    changes of its own (its commit is newer than GitHub's, so GitHub cannot compare the two). Asks the git program;
+    without git, or when GitHub's commit is not in this folder yet, the answer is no."""
+    import subprocess
+    if not (re.fullmatch(r"[0-9a-f]{40}", here or "") and re.fullmatch(r"[0-9a-f]{40}", top or "")):
+        return False
+    try:
+        p = subprocess.run(["git", "-C", str(root or config.ROOT), "merge-base", "--is-ancestor", top, here],
+                           capture_output=True, timeout=15, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return p.returncode == 0
+
+
 def newest() -> str:
     """The commit the project is on right now, from the address git itself asks. "" if it cannot be told."""
     r = httpx.get(f"https://github.com/{REPO}.git/info/refs", params={"service": "git-upload-pack"}, headers=UA, timeout=15)
@@ -92,7 +107,7 @@ def check(force: bool = False):
             top = newest() if here else ""
         except Exception:  # noqa: BLE001 - offline: what was known stays, and it is asked again in a minute
             return _state["result"]
-        if not top or top == here:
+        if not top or top == here or contains(here, top):     # up to date, or up to date plus changes of its own
             _state.update(result=None, seen=top)
             return None
         if top != _state["seen"] or _state["notes"] is None:      # a commit not seen before: ask what it brought, once

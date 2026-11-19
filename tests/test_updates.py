@@ -93,6 +93,19 @@ def boom(*a, **k):
 updates.httpx.get = boom
 check("offline for a moment: the notice stays, no error", updates.check(force=True), shown)
 
+# ---- updated, then changed here: GitHub cannot compare the two, but git here can tell
+import subprocess, tempfile as _tf
+repo = _tf.mkdtemp(prefix="pc-upd-repo-")
+def git(*a):
+    return subprocess.run(["git", "-C", repo, "-c", "user.name=t", "-c", "user.email=t@example.com", *a],
+                          capture_output=True, text=True, check=True).stdout.strip()
+git("init", "-q"); git("commit", "-q", "--allow-empty", "-m", "github"); theirs = git("rev-parse", "HEAD")
+git("commit", "-q", "--allow-empty", "-m", "mine"); mine = git("rev-parse", "HEAD")
+check("a copy that has GitHub's newest plus its own commits counts as up to date", updates.contains(mine, theirs, repo), True)
+check("a copy that is behind GitHub does not", updates.contains(theirs, mine, repo), False)
+check("a GitHub commit this folder has never seen does not", updates.contains(mine, "4" * 40, repo), False)
+shutil_rm = __import__("shutil").rmtree; shutil_rm(repo, ignore_errors=True)
+
 # ---- only the owner is told
 updates.httpx.get = fake_get
 c = TestClient(server.app, base_url="http://127.0.0.1:8765")
