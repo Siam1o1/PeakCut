@@ -44,8 +44,8 @@ with ctx.as_user(b.id):
     check("someone else cannot download my clips", ok)
     check("someone else cannot delete my creator", account.delete_creator(c["id"]) == {"ok": False})
 with ctx.as_user(a.id):
-    r = account.delete_creator(c["id"])
-    check("deleting a creator removes their videos and folder", r["ok"] and r["videos"] == 1 and not jobs.get(j2["id"]) and not creators.get(c["id"]) and not creators.root(c["id"]).exists(), str(r))
+    r = account.delete_creator(c["id"], with_clips=True)
+    check("deleting a creator with their clips removes their videos and folder", r["ok"] and r["videos"] == 1 and not jobs.get(j2["id"]) and not creators.get(c["id"]) and not creators.root(c["id"]).exists(), str(r))
     try:
         account.delete_account(a.id); ok = False
     except account.Busy: ok = True

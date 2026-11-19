@@ -68,7 +68,8 @@ def main() -> int:
                 ("long logs, the machine monitor, failed recordings, admin day totals", ["tests/test_robustness.py"]),
                 ("live transcriber: moments, kept stream, cuts, edit", ["tests/test_picks.py"]),
                 ("the game + cam layout", ["tests/test_split.py"]),
-                ("live transcriber routes", ["tests/test_transcriber_routes.py"])]
+                ("live transcriber routes", ["tests/test_transcriber_routes.py"]),
+                ("deleting a creator, keeping or deleting their clips", ["tests/test_delete_creator.py"])]
         for name, args in runs:
             print(f"\n=== {name} ===", flush=True)
             r = subprocess.run([sys.executable, *args], cwd=ROOT, env=env, capture_output=True, text=True, encoding="utf-8", errors="replace")

@@ -15,7 +15,8 @@ class Busy(Exception):
 
 
 def _busy(job) -> bool:
-    return job["status"] in ("queued", "running", "live") or job["id"] in live.SESSIONS
+    s = live.SESSIONS.get(job["id"])                  # a recording that has wrapped up no longer counts
+    return job["status"] in ("queued", "running", "live") or bool(s and not s.finished)
 
 
 # ---------------------------------------------------------------- clips and videos
@@ -111,23 +112,62 @@ def zip_clips(clip_ids: list, limit_gb: float = 4.0) -> Path:
 
 
 # ---------------------------------------------------------------- creators
-def delete_creator(cid: str) -> dict:
-    """Remove a creator, their settings and folder, and every video and clip filed under them."""
+def _rehome(job, uid) -> None:
+    """Move a video or recording out of a creator's folder into its owner's own folder, keeping every file."""
+    old = Path(job["dir"])
+    new = config.user_dir(uid) / "jobs" / old.name
+    new.parent.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(old), str(new))
+    o, n = str(old), str(new)
+    fix = lambda p: (n + p[len(o):]) if isinstance(p, str) and p.startswith(o) else p
+    real = jobs._jobs.get(job["id"], job)             # the registered job itself, so the page and later renders see the move
+    real["dir"] = n
+    if real.get("source_path"):
+        real["source_path"] = fix(real["source_path"])
+    if isinstance(real.get("source"), dict) and real["source"].get("path"):
+        real["source"]["path"] = fix(real["source"]["path"])
+    for c in real.get("clips", []):
+        if c.get("src"):
+            c["src"] = fix(c["src"])
+    real["creator"] = None
+    jobs.save(real)
+
+
+def delete_creator(cid: str, with_clips: bool = False) -> dict:
+    """Remove a creator: their settings, posting rules, activity log and what PeakCut learned about them. Their
+    videos and recordings are kept (moved to "No creator") unless with_clips is set. A recording of theirs is
+    stopped first."""
     c = creators.get(cid)
     if not c:
         return {"ok": False}
-    if live.active_for(cid):
-        raise Busy("This creator is being recorded. Stop the recording first.")
+    if c.get("auto_watch"):
+        creators.update(cid, {"auto_watch": False})      # the watcher must not start a new recording meanwhile
+    s = next((x for x in live.SESSIONS.values()
+              if x.job.get("creator") == cid and x.job.get("user") == ctx.uid() and not x.finished), None)
+    if s:
+        if not s.user_stopped:
+            s.stop("Stopped because the creator was deleted")
+        for _ in range(40):                               # up to 20 s for the recording to wrap up
+            if s.finished:
+                break
+            time.sleep(0.5)
+        else:
+            raise Busy("The recording is stopping. Try again in a moment.")
     mine = [j for j in jobs.list_jobs() if j.get("creator") == cid]
     if any(_busy(j) for j in mine):
         raise Busy("One of this creator's videos is still being made. Wait for it to finish first.")
+    kept = 0
     for j in mine:
-        jobs.delete(j["id"])
+        if with_clips:
+            jobs.delete(j["id"])
+        else:
+            _rehome(j, ctx.uid())
+            kept += 1
     with creators._lock:
         creators._mine().pop(cid, None)
     shutil.rmtree(creators.root(cid), ignore_errors=True)
     ctx.bump()
-    return {"ok": True, "videos": len(mine)}
+    return {"ok": True, "videos": len(mine), "kept": kept}
 
 
 # ---------------------------------------------------------------- the whole account

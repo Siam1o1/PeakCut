@@ -1825,6 +1825,21 @@ function askTyped(title, text, mustType, okLabel) {
     d.onclose = () => res(d.returnValue === "yes" ? i.value.trim() : null); d.returnValue = "no"; d.showModal(); i.focus();
   });
 }
+function askDeleteCreator(c) {
+  return new Promise(res => {
+    const d = $("#formdlg");
+    d.innerHTML = `<form method="dialog" class="dlg"><h2>Delete ${esc(c.name)}?</h2>
+      <p class="help">This removes ${esc(c.name)}, their settings, posting rules, activity log and what PeakCut learned about them. It cannot be undone. A recording of theirs is stopped first.</p>
+      <label class="ck"><input type="checkbox" id="dc_clips"> Also delete this creator's clips and recordings</label>
+      <p class="sub" id="dc_note">Their clips and recordings stay, under All videos with no creator.</p>
+      <label class="f"><span>Type <b>${esc(c.name)}</b> to confirm</span><input id="dc_name" autocomplete="off" spellcheck="false"></label>
+      <div class="dlg-foot"><button class="btn" value="no">Cancel</button><button class="btn danger" value="yes" id="dc_ok" disabled>Delete creator</button></div></form>`;
+    const i = $("#dc_name"), box = $("#dc_clips");
+    i.addEventListener("input", () => { $("#dc_ok").disabled = i.value.trim().toLowerCase() !== c.name.trim().toLowerCase(); });
+    box.addEventListener("change", () => { $("#dc_note").textContent = box.checked ? "Their clips and recordings are deleted too." : "Their clips and recordings stay, under All videos with no creator."; });
+    d.onclose = () => res(d.returnValue === "yes" ? {withClips: box.checked} : null); d.returnValue = "no"; d.showModal(); i.focus();
+  });
+}
 function drawJobs() {
   const root = $("#jobs"); if (!root) return;
   const cid = creatorId();
@@ -1908,7 +1923,7 @@ function drawCreatorForm() {
         <label class="f">Who can see posts (YouTube, TikTok)<select data-k="privacy">${opts({public:"Public", unlisted:"Unlisted", private:"Private"}, c.privacy)}</select></label>
         <label class="f">Campaign pay per 1,000 views ($)<input data-k="rate_per_1k" type="number" step="0.1" min="0" value="${c.rate_per_1k}"></label>
         <label class="f span">Line added to every post (credit, campaign tag)<input data-k="post_footer" value="${esc(c.post_footer)}" placeholder="Clipped from @streamer"></label></div></div>
-    <div class="card danger-card"><h2>Delete this creator</h2><p class="help">Removes ${esc(c.name)}, their settings and every video and clip filed under them. This cannot be undone.</p>
+    <div class="card danger-card"><h2>Delete this creator</h2><p class="help">Removes ${esc(c.name)}, their settings, posting rules and activity log. You choose whether their videos and clips are kept (under All videos) or deleted too. This cannot be undone.</p>
       <button class="btn danger" data-act="delcreator">${ic("trash")}Delete creator</button></div>
     <div class="savebar" id="savebar"><span>${ic("warn")}You have unsaved changes</span><button class="btn ghost" data-act="cdiscard">Discard</button><button class="btn primary" data-act="csave">${ic("check")}Save changes</button></div>`;
 }
@@ -1975,8 +1990,8 @@ function drawOverview() {
     ${steps.length ? `<div class="card"><div class="card-head"><div><h2>Next steps</h2><p class="sub">Finish setting up PeakCut</p></div></div>
       <div class="steps across">${steps.map((x, i) => `<button class="step" data-act="step" data-to="${esc(x[2])}"><span class="n">${i + 1}</span><span><b>${esc(x[0])}</b><span class="d">${esc(x[1])}</span></span>${ic("arrowr")}</button>`).join("")}</div></div>` : ""}
     <div class="card"><div class="card-head"><div><h2>Creators</h2><p class="sub">Each creator's status and results</p></div></div>
-      ${o.creators.length ? `<div class="scroll"><table><tr><th>Creator</th><th>Status</th><th>Auto-post</th><th class="num">Clips today</th><th class="num">Posted today</th><th class="num">Waiting</th><th class="num">Failed</th><th class="num">Views</th><th class="num">Est. $</th></tr>
-      ${o.creators.map(r => `<tr><td><a class="lnk" href="#" data-act="go" data-v="c:${esc(r.id)}">${esc(r.name)}</a></td><td>${state(r)}</td><td>${r.autopost ? `<span class="pill ok">On</span>` : `<span class="pill">Off</span>`}</td><td class="num">${r.clips_today} <span class="sub">/ ${r.clips_total}</span></td><td class="num">${r.posted_today} <span class="sub">/ ${r.posted_total}</span></td><td class="num">${r.queued}</td><td class="num">${r.failed}</td><td class="num">${r.views.toLocaleString()}</td><td class="num">${r.earnings.toFixed(2)}</td></tr>`).join("")}</table></div>`
+      ${o.creators.length ? `<div class="scroll"><table><tr><th>Creator</th><th>Status</th><th>Auto-post</th><th class="num">Clips today</th><th class="num">Posted today</th><th class="num">Waiting</th><th class="num">Failed</th><th class="num">Views</th><th class="num">Est. $</th><th></th></tr>
+      ${o.creators.map(r => `<tr><td><a class="lnk" href="#" data-act="go" data-v="c:${esc(r.id)}">${esc(r.name)}</a></td><td>${state(r)}</td><td>${r.autopost ? `<span class="pill ok">On</span>` : `<span class="pill">Off</span>`}</td><td class="num">${r.clips_today} <span class="sub">/ ${r.clips_total}</span></td><td class="num">${r.posted_today} <span class="sub">/ ${r.posted_total}</span></td><td class="num">${r.queued}</td><td class="num">${r.failed}</td><td class="num">${r.views.toLocaleString()}</td><td class="num">${r.earnings.toFixed(2)}</td><td class="num"><button class="btn sm icon ghost" data-act="delcreator" data-c="${esc(r.id)}" title="Delete ${esc(r.name)}" aria-label="Delete ${esc(r.name)}">${ic("trash")}</button></td></tr>`).join("")}</table></div>`
       : `<div class="empty"><img src="/brand/favicon.svg" alt=""><b>No creators yet</b>Add one to give each streamer their own workspace.</div>`}</div>
     <div class="card"><div class="card-head"><div><h2>Post queue</h2><p class="sub">${o.paused ? "Paused. Recording and clipping carry on; nothing is posted." : "Queued clips go out at their scheduled time."}</p></div>
         <button class="btn ${o.paused ? "primary" : ""}" data-act="pause">${ic(o.paused ? "play" : "pause")}${o.paused ? "Resume posting" : "Pause all posting"}</button></div>
@@ -2583,12 +2598,14 @@ document.addEventListener("click", async e => {
       return toast(`Deleted ${r.videos} video${r.videos === 1 ? "" : "s"} and ${r.clips} clip${r.clips === 1 ? "" : "s"}` + (r.skipped ? `. ${r.skipped} still being made were left alone.` : ""), "ok");
     }
     if (a === "delcreator") {
-      const c = creator(); if (!c) return;
-      const n = S.jobs.filter(j => j.creator === c.id).length;
-      if (!await askTyped(`Delete ${c.name}?`, `This removes the creator, their settings${n ? `, and their ${n} video${n === 1 ? "" : "s"} with all the clips` : ""} for good. It cannot be undone.`, c.name, "Delete creator")) return;
-      await api(`/api/creators/${encodeURIComponent(c.id)}`, {method:"DELETE"});
-      S.creators = S.creators.filter(x => x.id !== c.id); S.jobs = S.jobs.filter(j => j.creator !== c.id);
-      go("overview"); toast("Creator deleted", "ok"); return tick();
+      const c = S.creators.find(x => x.id === (d.c || creatorId())); if (!c) return;
+      const ans = await askDeleteCreator(c); if (!ans) return;
+      const r = await api(`/api/creators/${encodeURIComponent(c.id)}${ans.withClips ? "?with_clips=1" : ""}`, {method:"DELETE"});
+      S.creators = S.creators.filter(x => x.id !== c.id);
+      if (ans.withClips) S.jobs = S.jobs.filter(j => j.creator !== c.id); else S.jobs.forEach(j => { if (j.creator === c.id) j.creator = null; });
+      if (creatorId() === c.id) go("overview"); else render();
+      toast(ans.withClips ? "Creator deleted, with their clips." : `Creator deleted. ${r.kept ? r.kept + " video" + (r.kept === 1 ? "" : "s") + " kept under All videos." : ""}`, "ok");
+      return tick();
     }
     if (a === "delaccount") {
       const me = S.status.user;

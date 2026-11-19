@@ -995,12 +995,14 @@ def clips_zip(ids: str = ""):
 
 
 @app.delete("/api/creators/{cid}")
-def delete_creator(cid: str):
+def delete_creator(cid: str, with_clips: int = 0):
     _throttle("cdel:" + ctx.uid(), 30, 600)
     try:
-        r = account.delete_creator(cid)
+        r = account.delete_creator(cid, with_clips=bool(with_clips))
     except account.Busy as e:
         raise HTTPException(409, str(e))
+    except ValueError:
+        raise HTTPException(404, "No such creator")
     if not r.get("ok"):
         raise HTTPException(404, "No such creator")
     return r
