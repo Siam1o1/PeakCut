@@ -893,10 +893,10 @@ class Session:
             if best:
                 why = f"Best moment scored {best['score']}, {st['min_score']} needed. {why}".strip()
                 self._offer(verdict, best["start"], best["end"], best.get("peak"))
-                verdict.update(clip=best, viral=best["score"])
+                verdict.update(clip=best, **self._rated(notes, best))
             elif notes.get("best"):
                 self._offer(verdict, *notes["best"])
-                verdict["viral"] = notes.get("score")
+                verdict.update(viral=notes.get("score"), marks=notes.get("marks"))
             verdict.update(summary=notes.get("summary") or (best or {}).get("description") or "", why=why)
             return self._verdict(verdict, "Words judge: nothing clip-worthy")
         z = brain.loud_zscore(np.array(self.db, dtype=np.float32))
@@ -922,7 +922,8 @@ class Session:
             verdict["reaction"] = rs
             both = bool(match)
             ok = both or (st["decide_mode"] == "either" and c["score"] >= 90) or (must and added == 0)
-            told = dict(verdict, summary=notes.get("summary") or c.get("description") or "", viral=c["score"])
+            told = dict(verdict, summary=notes.get("summary") or c.get("description") or "",
+                        **self._rated(notes, c if c is keep[0] else None, c))
             self._offer(told, c["start"], c["end"], c.get("peak"))
             told["clip"] = c
             if not ok:
@@ -952,6 +953,15 @@ class Session:
             must = False
             if added >= (1 if every <= 2 else 2):
                 break
+
+    @staticmethod
+    def _rated(notes, best, other=None):
+        """The viral rating of a suggestion: the judge's four marks for its best stretch (which is its best clip
+        when it returned any), or, for another clip of the same check, that clip's own score with no marks."""
+        if best is not None and notes.get("marks"):
+            return {"viral": notes["score"], "marks": notes["marks"]}
+        c = best if best is not None else other
+        return {"viral": c["score"] if c else None, "marks": None}
 
     def _offer(self, v, start, end, peak=None, said=None):
         """Lets the clipper clip this stretch by hand if they disagree with the decision. `said`: the words heard

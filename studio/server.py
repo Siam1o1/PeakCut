@@ -1398,6 +1398,24 @@ def clip_suggestion(jid: str, sid: str):
         raise HTTPException(409, str(e))
 
 
+@app.post("/api/jobs/{jid}/suggestions/{sid}/rate")
+def rate_suggestion(jid: str, sid: str):
+    """The AI's viral rating of a suggestion it never rated: hook, share, engagement and emotion, out of 100."""
+    from . import suggest
+    job = _job_or_404(jid)
+    if not re.fullmatch(r"sg\d{1,6}", sid):
+        raise HTTPException(404, "That suggestion is gone.")
+    _throttle("rate:" + ctx.uid(), 20, 300, "That's a lot of ratings at once. Wait a minute.")
+    try:
+        return suggest.rate(job, sid)
+    except KeyError:
+        raise HTTPException(404, "That suggestion is gone.")
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    except RuntimeError as e:
+        raise HTTPException(502, str(e)[:300])
+
+
 @app.delete("/api/jobs/{jid}/suggestions/{sid}")
 def delete_suggestion(jid: str, sid: str):
     """Delete one of the AI's suggestions and the piece of stream kept for it."""

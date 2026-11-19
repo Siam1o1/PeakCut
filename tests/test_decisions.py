@@ -37,16 +37,20 @@ check("the reason is kept", notes["why"], "Just chatter, no payoff.")
 check("the stretch it would clip is kept", notes["best"] and 7 <= notes["best"][0] <= 10.5 and 39 <= notes["best"][1] <= 41, True)
 check("the live judge asks for the object answer", asked["schema"] is brain.LIVE_SCHEMA and "summary" in asked["prompt"]
       and "best_start" in asked["prompt"], True)
-with patched(brain, "ask_ai", fake({"summary": "s", "why": "w", "best_start": 10, "best_end": 40, "best_score": 140, "clips": []})):
+mk = {"hook": 8, "share": 6, "engagement": 7, "emotion": 15}
+with patched(brain, "ask_ai", fake({"summary": "s", "why": "w", "best_start": 10, "best_end": 40, "best_marks": mk, "clips": []})):
     notes = {}
     brain.judge_transcript(ws(140), 0, 70, min_len=15, max_len=60, notes=notes, min_score=75)
-check("the stretch's viral rating is kept, held to 100", notes["score"], 100)
-check("the rules ask for it, with the creator's bar", "best_score" in asked["prompt"] and "below 75" in asked["prompt"]
-      and "best_score" in brain.LIVE_SCHEMA["properties"], True)
-with patched(brain, "ask_ai", fake({"summary": "s", "why": "w", "best_start": 10, "best_end": 40, "best_score": "high", "clips": []})):
+check("the four marks are kept, each held to 10", notes["marks"], {"hook": 8, "share": 6, "engagement": 7, "emotion": 10})
+check("...and the viral rating is a quarter each, out of 100", notes["score"], round((8 + 6 + 7 + 10) * 2.5))
+check("the rules ask for hook, share, engagement and emotion, with the creator's bar", all(k in asked["prompt"] for k in
+      ("best_marks", "hook:", "share:", "engagement:", "emotion:", "average above 7.5")) and
+      set(brain.LIVE_SCHEMA["properties"]["best_marks"]["properties"]) == {"hook", "share", "engagement", "emotion"}, True)
+with patched(brain, "ask_ai", fake({"summary": "s", "why": "w", "best_start": 10, "best_end": 40,
+                                    "best_marks": {"hook": 5, "share": "lots", "engagement": 1, "emotion": 1}, "clips": []})):
     notes = {}
     brain.judge_transcript(ws(140), 0, 70, min_len=15, max_len=60, notes=notes)
-check("a rating that is not a number is left out", notes["score"], None)
+check("a mark that is not a number: no rating at all, never a guess", (notes["marks"], notes["score"]), (None, None))
 with patched(brain, "ask_ai", fake({"summary": "s", "why": "w", "best_start": 500, "best_end": 560, "clips": [dict(clip)]})):
     notes = {}
     got = brain.judge_transcript(ws(140), 0, 70, min_len=15, max_len=60, notes=notes)
@@ -68,10 +72,10 @@ def session(**settings):
     s.words = [{"w": "word", "s": float(i), "e": i + 0.5} for i in range(120)]; s.t_done = 120.0
     return s
 
-def judge(cands, summary="Talks about cars.", why="Just chatter.", best=(20.0, 50.0), score=None):
+def judge(cands, summary="Talks about cars.", why="Just chatter.", best=(20.0, 50.0), score=None, marks=None):
     def j(*a, notes=None, **k):
         if notes is not None:
-            notes.update(summary=summary, why=why, best=best, score=score)
+            notes.update(summary=summary, why=why, best=best, score=score, marks=marks)
         return [dict(c) for c in cands], 7
     return j
 
@@ -85,9 +89,11 @@ check("...and the stretch to clip anyway", (v["start"], v["end"]), (20.0, 50.0))
 check("each decision has its own number", isinstance(v["id"], int) and v["id"] >= 1, True)
 check("no moment and no rating from the judge: not rated", v.get("viral"), None)
 ser = session()
-with patched(live.brain, "judge_transcript", judge([], score=34)):
+M4 = {"hook": 4, "share": 3, "engagement": 3, "emotion": 3.6}
+with patched(live.brain, "judge_transcript", judge([], score=34, marks=M4)):
     ser._ai_check()
-check("the judge's rating of the stretch is the decision's viral rating", ser.verdicts[-1]["viral"], 34)
+check("the judge's rating of the stretch is the decision's viral rating, with its marks",
+      (ser.verdicts[-1]["viral"], ser.verdicts[-1]["marks"]), (34, M4))
 
 weak = dict(clip, start=30.0, end=60.0, score=62, peak=45.0, description="A weak joke.")
 se2 = session()
@@ -97,7 +103,11 @@ v2 = se2.verdicts[-1]
 check("a moment below the bar: its score and the bar are said", v2["why"].startswith("Best moment scored 62, 80 needed."), True)
 check("...and its own stretch is offered, not the fallback", (v2["start"], v2["end"], v2["peak"]), (30.0, 60.0, 45.0))
 check("...with its description as the summary when the judge gave none", v2["summary"], "A weak joke.")
-check("...and its score is the viral rating", v2["viral"], 62)
+check("...and with no marks from the judge, its score is the viral rating", (v2["viral"], v2["marks"]), (62, None))
+sm = session()
+with patched(live.brain, "judge_transcript", judge([weak], summary="", score=41, marks=M4)):
+    sm._ai_check()
+check("with the judge's four marks, they rate the moment", (sm.verdicts[-1]["viral"], sm.verdicts[-1]["marks"]), (41, M4))
 
 # clip it anyway
 out = se2.decide(v2["id"], True)

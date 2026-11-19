@@ -44,8 +44,9 @@ def add(s, v, clip=None):
         g = {"id": f"sg{n:03d}", "t": v.get("t"), "start": v["start"], "end": v["end"], "peak": v.get("peak"),
              "summary": str(v.get("summary") or "")[:300], "why": str(v.get("why") or "")[:300],
              "result": str(v.get("result") or "")[:120], "words": v.get("transcript"), "made_at": time.time(),
-             "score": int((clip or {}).get("score") or v.get("viral") or 0),
-             "viral": (clip or {}).get("score", v.get("viral")),       # the AI's rating out of 100; None: never asked
+             "score": int(v.get("viral") if v.get("viral") is not None else (clip or {}).get("score") or 0),
+             "viral": v.get("viral") if v.get("viral") is not None else (clip or {}).get("score"),   # out of 100; None: never rated
+             "marks": v.get("marks"),          # hook, share, engagement, emotion, out of 10 each
              "hold": {"status": "waiting", "file": None, "from": None, "to": None, "error": None}}
         for k in POST_KEYS:
             if clip and clip.get(k):
@@ -193,6 +194,26 @@ def _describe(job, c):
         jobs.save(job)
     except Exception:  # noqa: BLE001 - the clipper writes the hook in the editor instead
         pass
+
+
+def rate(job, sid):
+    """Ask the AI for the viral rating of a suggestion it never rated, from the words said in its stretch."""
+    with _lock:
+        g = get(job, sid)
+        if not g:
+            raise KeyError(sid)
+        a, b = g["start"], g["end"]
+    words = [w for w in _words(job) if a <= w["s"] <= b]
+    usage.set_context(job.get("creator"), job.get("title") or "Live stream")
+    r = brain.rate_stretch(words, job.get("title", ""), job.get("uploader", ""), timeout=config.LIVE_AI_TIMEOUT)
+    with _lock:
+        if get(job, sid) is not g:
+            raise KeyError(sid)
+        g.update(viral=r["score"], score=r["score"], marks=r["marks"])
+        if r["summary"] and not g.get("summary"):
+            g["summary"] = r["summary"]
+    jobs.save(job)
+    return g
 
 
 def delete(job, sid):

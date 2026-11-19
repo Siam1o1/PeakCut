@@ -136,11 +136,56 @@ with ctx.as_user(auth.LOCAL_ID):
     g8 = s8.job["suggestions"][0]
     check("the AI's hook, title and score are kept with the suggestion", (g8["hook"], g8["title"], g8["score"]), ("HE CRASHED", "The crash", 62))
     s9 = session(cr)
-    s9._verdict({"t": 100, "start": 60.0, "end": 90.0, "viral": 41}, "Words judge: nothing clip-worthy")
+    M4 = {"hook": 4, "share": 3, "engagement": 3, "emotion": 6.4}
+    s9._verdict({"t": 100, "start": 60.0, "end": 90.0, "viral": 41, "marks": M4}, "Words judge: nothing clip-worthy")
     s9._verdict({"t": 130, "start": 60.0, "end": 90.0}, "Passed over: stronger moments this hour")
-    check("the viral rating goes with the suggestion; one the AI never saw is not rated",
-          [(g["viral"], g["score"]) for g in s9.job["suggestions"]], [(41, 41), (None, 0)])
-    check("...and the AI's own moment's score wins", g8["viral"], 62)
+    check("the viral rating and its four marks go with the suggestion; one the AI never saw is not rated",
+          [(g["viral"], g["score"], g["marks"]) for g in s9.job["suggestions"]], [(41, 41, M4), (None, 0, None)])
+    check("...a suggestion with only the AI's own moment keeps that score", g8["viral"], 62)
+
+    # Rate it: the AI rates a suggestion it never rated, from the words in its stretch
+    (Path(s9.job["dir"]) / "words.json").write_text(__import__("json").dumps(s9.words), encoding="utf-8")
+    seen = {}
+    def fake_rate(words, *a, **k):
+        seen["words"] = [w["w"] for w in words]
+        return {"marks": M4, "score": 41, "summary": "Speed reads chat."}
+    real_rate = brain.rate_stretch
+    brain.rate_stretch = fake_rate
+    g9 = suggest.rate(s9.job, "sg002")
+    brain.rate_stretch = real_rate
+    check("Rate it: the stretch's words are rated, and the rating is kept",
+          (seen["words"][0], seen["words"][-1], g9["viral"], g9["score"], g9["marks"], g9["summary"]),
+          ("w60", "w90", 41, 41, M4, "Speed reads chat."))
+    try:
+        suggest.rate(s9.job, "sg404"); gone = None
+    except KeyError:
+        gone = "KeyError"
+    check("...a suggestion that is gone cannot be rated", gone, "KeyError")
+
+    # the rating itself: four marks, a quarter each
+    check("rating4: four marks of 10 make 100", (brain.rating4({"hook": 10, "share": 10, "engagement": 10, "emotion": 10}),
+          brain.rating4({"hook": 4, "share": 3, "engagement": 3, "emotion": 6.4}), brain.rating4(None)), (100, 41, None))
+    rq = {}
+    def fake_ai(prompt, schema=None, purpose="", **_):
+        rq.update(prompt=prompt, schema=schema)
+        return {"summary": "s", "marks": {"hook": 2, "share": 2, "engagement": 2, "emotion": 2}}, "m", 5
+    real_ai = brain.ask_ai
+    brain.ask_ai = fake_ai
+    r = brain.rate_stretch(s9.words[60:90], "title <x>", "Speed")
+    brain.ask_ai = lambda *a, **k: ({"marks": {"hook": 2}}, "m", 5)
+    try:
+        brain.rate_stretch(s9.words[60:90]); half = None
+    except ValueError as e:
+        half = str(e)
+    brain.ask_ai = real_ai
+    check("rate_stretch: asks for the four marks, the transcript fenced as untrusted", (r["score"], rq["schema"] is brain.RATE_SCHEMA,
+          "untrusted" in rq["prompt"] and "<transcript>" in rq["prompt"] and "title <x>" not in rq["prompt"]), (20, True, True))
+    check("...and refuses an answer without all four", half, "The AI did not give a rating. Try again.")
+    try:
+        brain.rate_stretch([]); empty = None
+    except ValueError as e:
+        empty = str(e)
+    check("...or a stretch where nobody talks", empty, "Nobody talks in this part, so there is nothing to rate.")
     suggest.flush(s8)
     c8 = suggest.clip(s8.job, g8["id"])
     check("...and become the draft's, with no extra AI call", (c8["hook"], c8["title"], c8["description"], c8["hashtags"], c8["score"], asked),
@@ -197,6 +242,16 @@ with ctx.as_user("u_someone_else"):
 check("someone else's suggestions cannot be clipped or deleted",
       (c.post(f"/api/jobs/{other['id']}/suggestions/sg001/clip", headers=H).status_code,
        c.delete(f"/api/jobs/{other['id']}/suggestions/sg001", headers=H).status_code), (404, 404))
+real_rate = brain.rate_stretch
+brain.rate_stretch = lambda *a, **k: {"marks": {"hook": 1, "share": 1, "engagement": 1, "emotion": 1}, "score": 10, "summary": ""}
+rr = c.post(f"/api/jobs/{J}/suggestions/sg002/rate", headers=H)
+def _busy(*a, **k):
+    raise RuntimeError("The AI did not answer: busy")
+brain.rate_stretch = _busy
+rb = c.post(f"/api/jobs/{J}/suggestions/sg002/rate", headers=H)
+brain.rate_stretch = real_rate
+check("the Rate it route", (rr.status_code, rr.json().get("viral"), rb.status_code), (200, 10, 502))
+check("someone else's suggestion cannot be rated", c.post(f"/api/jobs/{other['id']}/suggestions/sg001/rate", headers=H).status_code, 404)
 check("deleting a suggestion", (c.delete(f"/api/jobs/{J}/suggestions/sg002", headers=H).status_code, s7.job["suggestions"]), (200, []))
 check("deleting it again", c.delete(f"/api/jobs/{J}/suggestions/sg002", headers=H).status_code, 404)
 
