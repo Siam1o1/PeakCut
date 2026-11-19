@@ -53,6 +53,18 @@ answer.clear(); answer.update(base, **sub)
 t0 = brain._tidy(dict(answer), 0, 0)
 check("a hand clip (start and end 0) still gets a rating", t0["rating"]["value"], want)
 
+# the rating, not the AI's own score, decides which of two overlapping clips is kept
+def marks(n): return {"r_hook": n, "r_alone": n, "r_emotion": n, "r_payoff": n, "r_share": n}
+two = [dict(base, score=95, **marks(3)), dict(base, score=50, **marks(8))]
+brain.ask_ai = lambda prompt, schema=None, purpose="", **_: ([dict(x) for x in two], "m", 5)
+got = brain.judge_transcript(ws(140), 0, 70, min_len=15, max_len=60)[0]
+check("overlapping clips: the higher rating is kept", [(g["score"], g["rating"]["value"]) for g in got], [(80, 80)])
+got = brain.find_live_clips(ws(140), None, 70, min_len=15, max_len=60)[0]
+check("the live clip finder also uses the rating", [g["score"] for g in got], [80])
+check("the AI's own score is used when a clip has no marks", brain._value({"score": 64}), 64)
+brain.ask_ai = lambda prompt, schema=None, purpose="", **_: ([dict(answer)], "m", 5)
+check("the marks are anchored to the old scale", "5 to 8" in brain.RULES)
+
 # ---- the maths
 from studio import picks
 check("with a peak, the point is the peak", picks.point_time({"start": 10, "end": 50, "peak": 31.5}), 31.5)

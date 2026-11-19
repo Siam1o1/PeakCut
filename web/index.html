@@ -827,7 +827,7 @@ dialog[open]{animation:fadein .16s ease}
 .pt video{width:100%;border-radius:8px;background:#17110E;aspect-ratio:16/9}
 .pt .q{color:var(--dim);font-style:italic}
 .rate{display:flex;flex-wrap:wrap;gap:6px}.rk{display:inline-flex;gap:5px;align-items:baseline;font-size:13px;font-weight:600;padding:1px 8px;border-radius:8px;background:var(--muted);font-variant-numeric:tabular-nums}.rk small{font-size:11px;font-weight:500;color:var(--dim)}
-.lt-h2{display:flex;align-items:center;justify-content:space-between;gap:8px}.lt-sort{font-weight:500;cursor:pointer}
+.lt-bar{display:flex;justify-content:flex-end;margin:0 0 8px}.lt-sort{font-weight:500;cursor:pointer}
 .cut{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:8px;border-radius:10px;background:var(--muted)}
 .cut .grow{flex:1}
 @media (max-width:860px){.lt-live{grid-template-columns:1fr}.lt-lines{height:45vh}}
@@ -1376,7 +1376,7 @@ function go(v, tab, fromHistory) {
   else if (v === "library") view.innerHTML = `<div id="add"></div><div id="jobs"></div>`;
   else if (v === "settings") view.innerHTML = `<div id="sform"></div>`;
   else if (v === "usage") { view.innerHTML = `<div id="usage"></div>`; loadUsage(); }
-  else if (v === "transcriber") { view.innerHTML = `<div id="ltstart"></div><div class="lt-live" id="ltlive" hidden><section class="lt-tr"><h3>Transcript</h3><div id="ltlines" class="lt-lines" aria-live="off"></div></section><section><h3 class="lt-h2">Moments<label class="pill lt-sort"><input type="checkbox" id="lt_newest"> Newest first</label></h3><div id="ltpoints"></div></section></div><div id="ltdone"></div>`; S.ltJ = null; const nb = $("#lt_newest"); if (nb) nb.checked = ltNewest(); }
+  else if (v === "transcriber") { view.innerHTML = `<div id="ltstart"></div><div class="lt-bar"><label class="pill lt-sort"><input type="checkbox" id="lt_newest"> Newest first</label></div><div class="lt-live" id="ltlive" hidden><section class="lt-tr"><h3>Transcript</h3><div id="ltlines" class="lt-lines" aria-live="off"></div></section><section><h3>Moments</h3><div id="ltpoints"></div></section></div><div id="ltdone"></div>`; S.ltJ = null; const nb = $("#lt_newest"); if (nb) nb.checked = ltNewest(); }
   else view.innerHTML = `<div id="stream"></div><div id="cbody"></div>`;   // the live player stays put across tabs: no restart, no rebuffer
   if ($("#add")) drawAdd(v === "overview" ? "hero" : "compact");
   if (v === "overview" && window.GradientASCII) { try { window._gaStop = GradientASCII($("#appAscii"), {colors: ["#ffb27a", "#ffffff", "#ffd2ae", "#ffe0c2", "#fff1e6"], shape: "horizon", lightMode: true, cellSize: 16, density: 0.8, glyphOpacity: 0.26, gradientOpacity: 0.32, glow: 0.06, grain: 0.06, mouseInteraction: false, clickEffect: "none"}); } catch {} }
@@ -1731,7 +1731,7 @@ function clipHtml(j, c) {
   const key = `c:${j.id}:${c.id}`, busyClip = c.status === "queued" || c.status === "rendering";
   return `<article class="clip ${sel().has(key) ? "picked" : ""}">
     <button class="shot" data-act="openclip" ${a} aria-label="Open clip: ${esc(c.title || c.hook)}">${body}
-      <span class="badge l ${scoreCls(c.score)}" title="AI score">${c.score || "Hand"}</span><span class="badge r">${fmt(c.end - c.start)}</span></button>
+      <span class="badge l ${scoreCls(c.score)}" title="${c.rating ? "Viral rating" : "Score"}">${c.score || "Hand"}</span><span class="badge r">${fmt(c.end - c.start)}</span></button>
     <div class="clip-body">
       <div class="hook">${esc(c.hook || "Untitled clip")}</div>
       <div class="ttl">${esc(c.title)}</div>
@@ -2301,7 +2301,7 @@ function ptHtml(j, p) {
 }
 function drawTranscriber() {
   const st = $("#ltstart"); if (!st) return;
-  const busy = document.activeElement && document.activeElement.closest?.("#ltlive, #ltdone") && document.activeElement.matches("input");
+  const busy = document.activeElement && document.activeElement.closest?.("#ltlive, #ltdone") && document.activeElement.matches("input:not([type=checkbox])");
   ltKeep();
   const playing = $$("#ltlive video, #ltdone video").some(v => !v.paused && !v.ended);
   const live = ltJobs().find(j => j.status === "live"), done = ltJobs().filter(j => j.status !== "live");

@@ -66,8 +66,8 @@ Rules:
 - score: 0-100, how likely a stranger keeps watching. Be honest; most clips are 50-80.
 - peak: the [seconds] value of the single instant people would share (the punchline, the reaction, the play).
   It lies between start and end.
-- r_hook, r_alone, r_emotion, r_payoff, r_share: five marks from 0 to 10, each judged on its own and honestly
-  (most clips are 3 to 7). r_hook: do the first 3 seconds grab a stranger. r_alone: does it make sense with no
+- r_hook, r_alone, r_emotion, r_payoff, r_share: five marks from 0 to 10, each judged on its own. A clip worth
+  returning usually gets 5 to 8 on each; use 9 or 10 only for something exceptional, and give a weak part 0 to 4. r_hook: do the first 3 seconds grab a stranger. r_alone: does it make sense with no
   context. r_emotion: is it funny, shocking or hype. r_payoff: does the moment deliver on its setup. r_share: would
   someone send it to a friend.
 - r_why: one short line (under 120 characters) on what the marks are based on.
@@ -138,6 +138,19 @@ def _peak(c, s, e):
     return round(p, 2) if s <= p <= e else None
 
 
+def _marks(c):
+    """The five marks of an AI answer, each clamped to 0..10; None for one that is missing or not a number."""
+    return {k: (max(0.0, min(10.0, _num(c.get("r_" + k)))) if _num(c.get("r_" + k), None) is not None else None)
+            for k in signals.RATING_WEIGHTS}
+
+
+def _value(c):
+    """The score a clip will end up with: the rating worked out from the five marks, or else the AI's own score.
+    Used to sort, to settle overlaps and to cut to the best clips, so all of them agree with what is shown."""
+    v = signals.rating(_marks(c))
+    return v if v is not None else max(0, min(100, int(_num(c.get("score")))))
+
+
 def _tidy(c, s, e, game=None):
     """Whatever the AI answered, only this shape ever leaves here: clamped numbers, short link-free text."""
     cat = str(c.get("category", "other")).lower()
@@ -150,8 +163,7 @@ def _tidy(c, s, e, game=None):
             tags.append(t)
     words = c.get("highlight_words") if isinstance(c.get("highlight_words"), list) else []
     # The five marks come from the AI, the rating is worked out here. Without all five the AI's own score stays.
-    marks = {k: (max(0.0, min(10.0, _num(c.get("r_" + k)))) if _num(c.get("r_" + k), None) is not None else None)
-             for k in signals.RATING_WEIGHTS}
+    marks = _marks(c)
     value = signals.rating(marks)
     out = {
         "start": s, "end": e, "score": max(0, min(100, int(_num(c.get("score"))))),
@@ -329,7 +341,7 @@ def find_clips(words, db, duration, title="", uploader="", max_clips=6, min_len=
         found = fallback_by_loudness(db, words, max_clips, max_len, duration)
         note = "The AI was unavailable, so clips were picked by loudness only."
     clips = []
-    for c in sorted(found, key=lambda c: -_num(c.get("score"))):
+    for c in sorted(found, key=lambda c: -_value(c)):
         s, e = _snap(c, lines, words, min_len, max_len, duration)
         if e - s < min(min_len, duration) - 1:
             continue
@@ -353,7 +365,7 @@ def find_live_clips(words, z, now, chat=None, title="", uploader="", min_len=15,
               + RULES.format(min_len=min_len, max_len=max_len, transcript=_fmt(lines)))
     out, _model, spent = ask_ai(prompt, purpose="Live check")
     clips = []
-    for c in sorted((c for c in out if isinstance(c, dict)), key=lambda c: -_num(c.get("score"))):
+    for c in sorted((c for c in out if isinstance(c, dict)), key=lambda c: -_value(c)):
         s, e = _snap(c, lines, words, min_len, max_len, now)
         if e - s < min_len - 1 or _overlaps(s, e, list(existing) + clips):
             continue
@@ -471,7 +483,7 @@ def judge_transcript(words, start, now, title="", uploader="", min_len=15, max_l
               + RULES.format(min_len=min_len, max_len=max_len, transcript=_fmt(lines)))
     out, _model, spent = ask_ai(prompt, purpose="Live: words judge", timeout=timeout)
     clips = []
-    for c in sorted((c for c in out if isinstance(c, dict)), key=lambda c: -_num(c.get("score"))):
+    for c in sorted((c for c in out if isinstance(c, dict)), key=lambda c: -_value(c)):
         s, e = _snap(c, lines, words, min_len, max_len, now)
         if e - s < min_len - 1 or _overlaps(s, e, list(existing) + clips):
             continue

@@ -996,6 +996,7 @@ class Session:
                      "description": "", "hashtags": [], "highlight_words": []}
             self.manual.remove(req)
             c.update(start=round(req["start"], 2), end=round(min(req["end"], self.samples / SR), 2), score=0)
+            c.pop("rating", None)         # a clip made by hand has no rating, whatever the AI said about its words
             if req.get("why"):
                 c["reason"] = req["why"]
             self._add_clip(c)

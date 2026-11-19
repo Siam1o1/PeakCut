@@ -277,6 +277,8 @@ def edit_cut(job, cut_id, options):
             "made_at": time.time()}
     if p.get("cand"):
         clip["cand"] = p["cand"]
+    if isinstance(p.get("rating"), dict):
+        clip["rating"] = p["rating"]          # the editor shows the marks of the moment it came from
     if boxes:
         clip["split"] = boxes
     new["source"]["path"] = str(dest)
