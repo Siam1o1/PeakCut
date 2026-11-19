@@ -298,6 +298,8 @@ def create(source: dict, options: dict, enqueue=True, creator=None, kind="video"
     opts = {**base, **clean_options(options)}
     if opts["min_len"] >= opts["max_len"]:
         opts["min_len"] = max(5, opts["max_len"] - 5)
+    if creator and "res" in opts and "res" in clean_options(options):
+        creators.remember_res(creator, opts["res"])      # chosen in the options: remembered for next time
     job = {"id": jid, "user": ctx.uid(), "kind": kind, "creator": creator, "dir": str(d), "created": time.time(), "source": source,
            "options": opts, "status": "queued", "stage": "Waiting", "progress": 0.0,
            "title": source.get("name", ""), "uploader": "", "duration": 0, "clips": [], "error": None, "ai": {}}
@@ -369,6 +371,8 @@ def request_render(jid, cid, changes: dict):
         new["split"] = render.clean_split(changes["split"])
     if "res" in changes:
         new["res"] = clean_options({"res": changes["res"]}).get("res", 1080)
+        if job.get("creator"):                   # the person chose this size: the creator's next clips use it
+            creators.remember_res(job["creator"], new["res"])
     if new.get("style") not in render.STYLES:
         new["style"] = DEFAULTS["style"]
     if new.get("layout") not in render.LAYOUTS:
@@ -402,11 +406,6 @@ def render_one(job, clip, words):
         near = _caption_words(job, clip, words, off) if clip.get("captions", True) else []
         out = render.render_clip(src, d / "clips", clip["id"], local, near, job["width"], job["height"])
         clip.update(out, status="done", version=clip.get("version", 0) + 1, error=None)
-        if job.get("creator") and clip.get("res") in (720, 1080):     # the creator's next clips use this size
-            try:
-                creators.update(job["creator"], {"res": clip["res"]})
-            except Exception:  # noqa: BLE001 - a creator deleted meanwhile must not fail the clip
-                pass
         post = {k: clip[k] for k in ("title", "description", "hashtags", "hook", "start", "end", "score")}
         (d / "clips" / f"{clip['id']}.json").write_text(json.dumps(post, indent=1), encoding="utf-8")
         if clip["version"] == 1:

@@ -586,11 +586,16 @@ class Session:
                 c["reason"] = req["why"]
             self._add_clip(c)
 
+    def _res(self):
+        """The export size to use now: the creator's current choice (it may have changed since this recording began)."""
+        r = (creators.get(self.job["creator"]) or {}).get("res") if self.job.get("creator") else None
+        return r if r in (720, 1080) else self.settings.get("res", 1080)
+
     def _add_clip(self, c):
         if self.pick:
             return picks.add_point(self, c)
         self.n += 1
-        c.update(id=f"clip{self.n:03d}", style=self.settings["style"], layout=self.settings["layout"], res=self.settings.get("res", 1080),
+        c.update(id=f"clip{self.n:03d}", style=self.settings["style"], layout=self.settings["layout"], res=self._res(),
                  captions=self.job["options"].get("captions", True), status="queued", version=0, made_at=time.time())
         with self.lock:
             self.job["clips"].append(c)

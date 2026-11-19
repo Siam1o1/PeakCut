@@ -88,5 +88,24 @@ check("re-making a clip can change its export size", job["clips"][0]["res"], 720
 jobs.request_render(job["id"], "clip001", {"res": 12})
 check("a junk size when re-making falls back to 1080", job["clips"][0]["res"], 1080)
 
+# ---- the export size is remembered only when the person chooses it
+from studio import live
+creators.update(cr["id"], {"res": 1080})
+lj = jobs.create({"type": "live", "url": "https://www.twitch.tv/x", "name": "x live"}, {}, enqueue=False,
+                 creator=cr["id"], kind="live")
+sess = live.Session(lj, creators.get(cr["id"]))          # a recording that began while the creator was on 1080
+creators.remember_res(cr["id"], 720)
+jobs.submit_live = lambda fn: None
+got = sess._add_clip({"start": 1.0, "end": 20.0, "score": 90, "hook": "", "title": "", "description": "", "hashtags": [], "reason": ""})
+check("a live clip uses the creator's size as it is now", got["res"], 720)
+c1080 = dict(job["clips"][0], res=1080, status="queued")
+jobs.render_one(job, c1080, [])
+check("rendering a clip does not change the creator's saved size", creators.get(cr["id"])["res"], 720)
+from studio import account
+gone = creators.create({"name": "Soon Gone"})
+account.delete_creator(gone["id"], with_clips=True)
+creators.remember_res(gone["id"], 1080)
+check("a deleted creator is not brought back", (creators.root(gone["id"]).exists(), creators.get(gone["id"])), (False, None))
+
 print("ALL PASSED" if not fails else f"{len(fails)} failed")
 sys.exit(1 if fails else 0)

@@ -248,6 +248,8 @@ def edit_cut(job, cut_id, options):
     style = st if isinstance(st, str) and st in render.STYLES else cr.get("style", "bounce")
     layout = ly if isinstance(ly, str) and ly in render.LAYOUTS else cr.get("layout", "blur")
     res = int(options["res"]) if str(options.get("res")) in ("720", "1080") else cr.get("res", 1080)
+    if job.get("creator"):
+        creators.remember_res(job["creator"], res)       # the person's choice, used for this creator from now on
     hook = str(options.get("hook") or "").strip()[:60]
     boxes = render.clean_split(options.get("split"))
     words = [dict(w, s=round(w["s"] - cut["start"], 2), e=round(w["e"] - cut["start"], 2))

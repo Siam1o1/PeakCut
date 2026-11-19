@@ -170,6 +170,19 @@ def update(cid, data: dict) -> dict:
     return c
 
 
+def remember_res(cid, res):
+    """Saves the export size the person chose (720 or 1080) on the creator, and nothing else. A creator that has
+    been deleted is left alone: it is never brought back."""
+    if res not in (720, 1080):
+        return
+    with _lock:
+        c = get(cid)
+        if not c or not root(cid).exists():
+            return
+        c["res"] = res
+        _write(c)
+
+
 def set_profiles(cid, profiles: dict, extra: dict = None):
     """Each channel's public profile and live state, written by profiles.refresh. `profile` is the recording
     channel's one, used for the creator's picture."""
