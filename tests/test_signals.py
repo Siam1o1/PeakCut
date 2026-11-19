@@ -92,4 +92,52 @@ se.top.admit(9.0, __import__("time").time())
 se._ai_check((0.0, 40.0), "Jump: loudness z 4.0", 4.0)
 check("a weaker jump is passed over when the hour is full", se.verdicts[-1]["result"], "Passed over: stronger moments this hour")
 
+# ---- fix round 1
+import time as _time
+def fill_chat(se, rate, secs, burst=None, seed=3):
+    """Chat as the reader thread adds it, through the real trimming path, one second at a time."""
+    r = np.random.default_rng(seed)
+    for sec in range(secs):
+        k = int(r.poisson(rate))
+        if burst and sec >= secs - 5:
+            k = burst
+        for i in range(k):
+            se.chat_users.setdefault(sec, set()).add(f"u{sec}_{i}")
+            se.chat_kept = live._trim_names(se.chat_users, sec, se.chat_kept)
+    se.chat_on = True
+check("chat names are kept for the whole 15-minute baseline", live.CHAT_KEEP >= 960, True)
+se = session(); se.db = [-30.0] * 1000 + [-30.0] * 5
+fill_chat(se, 0.8, 1005, burst=3)
+se.samples = 1005 * 16000
+z = se._chat_z(1004)
+check("ordinary chat plus a small burst is a moderate z, not 50", 0 < z < 3.5, True)
+check("...and no chat jump is raised", (se._watch_spikes(), se.spike)[1], None)
+check("trimming keeps at least 15 minutes of names", len([t for t in se.chat_users if t >= 1004 - 930]) > 400, True)
+se = session(); fill_chat(se, 0.3, 1005, burst=3); se.samples = 1005 * 16000
+z = se._chat_z(1004)
+check("sparse chat with a burst gives a finite, sensible z", 2 < z < 20, True)
+se = session(); se.chat_on = True
+for sec in range(1000, 1005): se.chat_users[sec] = {f"b{sec}_{i}" for i in range(3)}
+se.chat_total = 15
+check("a burst on an empty chat is judged by the floor (3/s over 0.5/s floor)", round(se._chat_z(1004), 1), round(3 / (1.4826 * 0.5), 1))
+check("a thin chat (1/s) over empty does not count", (lambda s: (s.chat_users.update({t: {"a"} for t in range(1000, 1005)}), s._chat_z(1004))[1])(session()), 0.0)
+# each second is scaled by the viewer count of its own time
+se = session(); se.chat_on = True
+se.chat_users = {t: {f"p{t}_{i}" for i in range(2)} for t in range(0, 100)}
+se.viewer_log = [(0, 1000), (50, 2000)]
+ser = se._chat_series(99, 100)
+check("a second before the count changed uses the old count", (ser[10], ser[90]), (2.0, 1.0))
+# a due must-clip bypasses the hourly limit; a pick session is limited too
+se = session(live_per_hour=1); se.job["clips"] = [{"score": 0, "made_at": 0}]
+se.words = [{"w": "word", "s": float(i), "e": i + 0.5} for i in range(40)]; se.t_done = 40.0
+se.top.admit(9.0, _time.time())
+se.settings["must_clip_min"] = 1
+se._ai_check((0.0, 40.0), "Jump: loudness z 4.0", 4.0)
+check("a due must-clip is not passed over", se.verdicts[-1]["result"] != "Passed over: stronger moments this hour", True)
+se = session(live_per_hour=1); se.pick = True; se.job["mode"] = "pick"
+se.words = [{"w": "word", "s": float(i), "e": i + 0.5} for i in range(40)]; se.t_done = 40.0
+se.top.admit(9.0, _time.time())
+se._ai_check((0.0, 40.0), "Jump: loudness z 4.0", 4.0)
+check("pick mode: a second, weaker jump in the hour is passed over", se.verdicts[-1]["result"], "Passed over: stronger moments this hour")
+
 print("ALL PASSED" if not fails else f"{len(fails)} failed"); sys.exit(1 if fails else 0)

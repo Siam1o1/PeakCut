@@ -1901,7 +1901,7 @@ function drawCreatorForm() {
       <div class="fields">
         <label class="f">Check the live stream every<select data-k="ai_every_min">${opts({1:"1 minute", 2:"2 minutes", 3:"3 minutes", 5:"5 minutes", 10:"10 minutes"}, c.ai_every_min || 3)}</select><small class="sub" id="costhint" style="font-weight:400">${costHint(c.ai_every_min)}</small></label>
         <p class="help span" style="margin:0">On top of that, the AI always looks straight away when the stream suddenly gets louder or chat gets busier, and when someone says "clip" or "clip it".</p>
-        <label class="f">Most live clips per hour<input data-k="live_per_hour" type="number" min="1" max="60" value="${c.live_per_hour}"></label>
+        <label class="f">Most moments sent to the AI per hour<input data-k="live_per_hour" type="number" min="1" max="60" value="${c.live_per_hour}"><small class="sub" style="font-weight:400">Clips you mark by hand or ask for with "clip it" are never limited.</small></label>
         <label class="f">Make a clip when<select data-k="decide_mode">${opts({both:"Both judges say yes", either:"Both say yes, or the words judge is very sure (90+)"}, c.decide_mode)}</select></label>
         <label class="f">Words judge must score at least<input data-k="min_score" type="number" min="0" max="100" value="${c.min_score}"></label>
         <label class="f">Make sure there's a live clip at least every<select data-k="must_clip_min">${opts({0:"Off", 15:"15 minutes", 30:"30 minutes", 60:"1 hour", 120:"2 hours"}, c.must_clip_min)}</select></label>

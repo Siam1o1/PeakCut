@@ -22,7 +22,7 @@ PAD = 8               # seconds kept either side of a clip so it can be re-trimm
 CHECK_EVERY = 180     # look at the stream every 3 minutes...
 QUIET_MAX = 600       # ...but only ask the AI when something happened, or at most every 10 minutes when calm
 WINDOW = 240          # seconds of transcript shown to the AI per check
-CHAT_KEEP = 600       # seconds of chat names kept: only the last few minutes are ever read
+CHAT_KEEP = 960       # seconds of chat names kept: the baseline reads the last 15 minutes, plus the few seconds being judged
 SR = 16000
 
 
@@ -155,6 +155,7 @@ class Session:
         self.last_spike = -999.0      # when the last jump was sent to the AI (stream seconds)
         self.base = {}                # running averages the jumps are measured against, shown on the card
         self.spikes = 0
+        self.viewer_log = []          # (second, viewers) each time the count was read, so each second is scaled by its own
         self.viewers = None           # how many people are watching, when the platform says (checked about once a minute)
         self.top = signals.HourlyTop(settings.get("live_per_hour", 4))   # keeps the strongest moments of each hour
         self.zs = {"loud": 0.0, "chat": 0.0}   # how unusual loudness and chat are now, against the last 15 minutes
@@ -237,8 +238,12 @@ class Session:
         url = self.job["source"]["url"]
         while not self.stop_flag.is_set() and not self.ended:
             try:
-                v = profiles.live_now(profiles.platform_of(url), url).get("viewers")
+                v = profiles.live_shared(profiles.platform_of(url), url).get("viewers")
                 self.viewers = int(v) if v else None
+                with self.lock:
+                    if self.viewers:
+                        self.viewer_log.append((int(self.samples / SR), self.viewers))
+                        del self.viewer_log[:-1000]
             except Exception:  # noqa: BLE001
                 pass
             self.stop_flag.wait(60)
@@ -401,14 +406,21 @@ class Session:
         None when there is no chat to read. Where names cannot be told, messages are counted instead."""
         people = self.chat_people()
         rng = range(max(0, end - length + 1), end + 1)
+        with self.lock:
+            log = list(self.viewer_log)
+        at, i, known = [], 0, (log[0][1] if log else None)    # the count known at each second, carried forward
+        for t in rng:
+            while i < len(log) and log[i][0] <= t:
+                known, i = log[i][1], i + 1
+            at.append(known)
         if people:
-            return [signals.per_viewer(len(people.get(t, ())), self.viewers) for t in rng]
+            return [signals.per_viewer(len(people.get(t, ())), v) for t, v in zip(rng, at)]
         if self.chat_on or self.chat_total:
-            return [signals.per_viewer(self.chat.get(t, 0), self.viewers) for t in rng]
+            return [signals.per_viewer(self.chat.get(t, 0), v) for t, v in zip(rng, at)]
         return None
 
     def _chat_z(self, end):
-        """How unusual chat is in the five seconds up to `end`, against the 15 minutes before. A chat that is nearly
+        """How unusual chat is in the five seconds ending at second `end` (included), against the 15 minutes before. A chat that is nearly
         silent has almost no spread, so a couple of messages would score huge: that needs at least a small crowd."""
         series = self._chat_series(end, 930)
         if not series:
@@ -416,7 +428,8 @@ class Session:
         crowd = signals.per_viewer(1.5, self.viewers) * 5
         if sum(series[-5:]) < crowd:
             return 0.0
-        return min(signals.series_z(series), self.Z_CAP)
+        floor = signals.per_viewer(self.CHAT_FLOOR, self.viewers)   # half a chatter a second: below that is just quiet
+        return min(signals.series_z(series, floor=floor), self.Z_CAP)
 
     def chat_people(self):
         """Second -> how many different people were talking, where that is known.
@@ -452,6 +465,7 @@ class Session:
         return True
 
     AUTO_BEFORE, AUTO_AFTER, AUTO_GAP = 30, 20, 60   # seconds of stream sent around a jump; least time between jumps
+    CHAT_FLOOR = 0.5                                  # chatters per second: the least spread chat is judged against
     Z_CAP = 50.0                                      # a z-score above this is not told apart: it is a moment either way
     JUMP = 0.6                                        # 60% louder or busier than the last three minutes
 
@@ -503,7 +517,7 @@ class Session:
                 self.base = {"warming": True}
                 return
             loud = 10 ** (np.array(self.db[max(0, n - 930):], dtype=np.float64) / 20)   # plain level, not decibels
-            zc = self._chat_z(n)
+            zc = self._chat_z(n - 1)      # the seconds n-5..n-1: the one still filling is left out, as for loudness
         zl = min(signals.series_z(loud), self.Z_CAP)
         self.zs = {"loud": zl, "chat": zc}
         jz = float(self.settings.get("jump_z", 3.5))
@@ -539,7 +553,7 @@ class Session:
         if len(win) < 8:
             self.skipped += 1
             return self._verdict(verdict, "Skipped: nobody talking")
-        strongest = self._baseline() and not self.pick and (trigger or "").startswith("Jump") and score is not None
+        strongest = self._baseline() and not must and (trigger or "").startswith("Jump") and score is not None
         if strongest:    # the strongest few moments of the hour are kept, whatever order they came in
             if not self.top.admit(float(score), time.time()):
                 self.skipped += 1

@@ -17,10 +17,11 @@ def robust_z(history, now_value, floor=None) -> float:
     return float((now_value - med) / (MAD_TO_SD * max(mad, lo)))
 
 
-def series_z(series, now_len=5, window=900, exclude=10, seed=None) -> float:
+def series_z(series, now_len=5, window=900, exclude=10, seed=None, floor=None) -> float:
     """The last `now_len` seconds of a per-second series against the `window` seconds before them, leaving out the
     `exclude` seconds just before now (a moment builds up). With under 60 seconds of history, a saved typical value
-    (`seed`: median and MAD from the creator's profile) is used instead, or 0 if there is none."""
+    (`seed`: median and MAD from the creator's profile) is used instead, or 0 if there is none. `floor` is the
+    smallest spread to divide by: a count series that is mostly zero has no spread at all."""
     s = np.asarray(series, dtype=np.float64)
     if s.size < now_len:
         return 0.0
@@ -30,7 +31,7 @@ def series_z(series, now_len=5, window=900, exclude=10, seed=None) -> float:
         if not seed:
             return 0.0
         return float((now - seed["median"]) / (MAD_TO_SD * max(seed["mad"], 1e-6)))
-    return robust_z(hist, now)
+    return robust_z(hist, now, floor)
 
 
 def per_viewer(count, viewers):
