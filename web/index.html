@@ -2303,6 +2303,13 @@ async function drawSettings() {
 async function saveSettings() { const d = {}; $$("#sform [data-s]").forEach(i => d[i.dataset.s] = i.value); await send("/api/settings", d, "PUT"); }
 
 /* ============================================================ clip editor */
+function openWaitingDraft() {
+  const w = S.waitDraft; if (!w) return;
+  const j = jobOf(w.j), c = j?.clips.find(x => x.sug === w.sid), g = (j?.suggestions || []).find(x => x.id === w.sid);
+  if (c) { S.waitDraft = null; if (!$("#clipdlg").open) openClip(w.j, c.id); return; }
+  if (g?.hold?.status === "error") { S.waitDraft = null; return toast(g.hold.error || "That part of the stream could not be kept.", "bad"); }
+  if (!g || Date.now() > w.until) S.waitDraft = null;
+}
 function openClip(jid, cid) { D.jid = jid; D.cid = cid; D.sig = ""; D.split = null; drawClipDlg(true); $("#clipdlg").showModal(); }
 function drawClipDlg(full) {
   const j = jobOf(D.jid), c = j?.clips.find(x => x.id === D.cid), dlg = $("#clipdlg");
@@ -2326,7 +2333,9 @@ function drawClipDlg(full) {
         <div class="ob"><div class="ot">Layout</div>${choice("cd_layout", Object.entries(S.status.layouts).map(([k, v]) => ({v:k, label:LAYOUT_SHORT[k] || v, title:v, prev:`<span class="lay-prev ${esc(k)}"><span class="ph"><i></i></span></span>`})), c.layout || "blur", false, "layout")}</div>
         <div class="ob"><div class="ot">Export size</div>${choice("cd_res", [{v:720, label:"720p", prev:"<b>720x1280</b>"}, {v:1080, label:"1080p", prev:"<b>1080x1920</b>"}], c.res || 1080, false, "res")}</div>
         <p class="sub">For ‘Game top, cam below’: <button type="button" class="btn sm" data-act="clipboxes">${c.split || S.creators.find(x => x.id === j.creator)?.split ? "Change the facecam box" : "Draw the facecam box"}</button></p>
-        <div class="two"><label class="f">Start (seconds)<input data-f="start" type="number" step="0.5" value="${c.start}"></label>
+        ${c.src_offset != null ? `<p class="sub" id="cd_span">This clip can start as early as <b>${fmt(Math.max(0, c.src_offset))}</b> (${Math.max(0, c.src_offset).toFixed(1)} s) and end as late as <b>${fmt(c.src_end)}</b> (${Number(c.src_end).toFixed(1)} s).
+          <button type="button" class="btn sm" data-act="cdearlier" data-n="5">Start 5s earlier</button> <button type="button" class="btn sm" data-act="cdearlier" data-n="10">10s earlier</button> <button type="button" class="btn sm" data-act="cdearlier" data-n="9999">From the earliest</button></p>` : ""}
+        <div class="two"><label class="f">Start (seconds)<input data-f="start" type="number" step="0.5" min="${c.src_offset != null ? Math.max(0, c.src_offset) : 0}" value="${c.start}"></label>
           <label class="f">End (seconds)<input data-f="end" type="number" step="0.5" value="${c.end}"></label></div>
         <h3>Post text</h3>
         <label class="f">Title<input data-f="title" value="${esc(c.title)}"></label>
@@ -2580,6 +2589,7 @@ async function tick() {
     if (S.view === "overview") { S.overview = await api("/api/overview"); S.ovAt = Date.now(); }
     if (creatorId() && !creator()) return go("overview");
     render();
+    openWaitingDraft();
   } catch {}
 }
 // Back on the tab (or window): ask straight away instead of waiting out the slow background timer, and put a
@@ -2833,7 +2843,20 @@ document.addEventListener("click", async e => {
       if (clip) toast("Clipping that part…", "ok");
       return tick();
     }
-    if (a === "clipnow") { await send(`/api/live/${d.j}/clip`, {seconds:Number(d.s)}); return toast(`Clipping the last ${d.s} seconds…`, "ok"); }
+    if (a === "clipnow") {
+      const r = await send(`/api/live/${d.j}/clip`, {seconds:Number(d.s)});
+      if (!r.sid) return toast(`Clipping the last ${d.s} seconds…`, "ok");
+      S.waitDraft = {j: d.j, sid: r.sid, until: Date.now() + 120000};       // opened in the editor once its piece is saved
+      toast(`Saving the last ${d.s} seconds… the editor opens in a few seconds.`, "ok");
+      return tick();
+    }
+    if (a === "cdearlier") {
+      const j = jobOf(D.jid), c = j?.clips.find(x => x.id === D.cid), inp = $('#clipdlg [data-f="start"]');
+      if (!c || !inp) return;
+      const lo = Math.max(0, c.src_offset ?? 0);
+      inp.value = Math.max(lo, Number(inp.value) - Number(d.n)).toFixed(1);
+      return;
+    }
     if (a === "ltmark") { await send(`/api/live/${d.j}/points`, {t:Number(d.t)}); toast("Added to the moments.", "ok"); return tick(); }
     if (a === "ptcut") {
       const lead = Number($(`#lead_${d.j}_${d.p}`)?.value ?? 20), length = Number($(`#len_${d.j}_${d.p}`)?.value ?? 60);

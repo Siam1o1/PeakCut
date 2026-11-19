@@ -360,6 +360,8 @@ def request_render(jid, cid, changes: dict):
     if "src_offset" in clip:  # live clip: can only move inside the saved piece of stream
         new["start"] = max(new["start"], clip["src_offset"])
         new["end"] = min(new["end"], clip["src_end"])
+    if math.isfinite(new["start"]) and new["start"] < 0:      # before the video began: from its very start
+        new["start"] = 0.0
     if not (math.isfinite(new["start"]) and math.isfinite(new["end"])) or new["start"] < 0:
         raise ValueError("Those times aren't valid.")
     if not 3 <= new["end"] - new["start"] <= 180:

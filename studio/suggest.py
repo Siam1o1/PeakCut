@@ -15,7 +15,8 @@ from pathlib import Path
 
 from . import brain, config, jobs, media, safe, usage
 
-PAD = 5.0           # seconds kept either side of the stretch, so a clip can start or end a little wider
+PAD = (30.0, 10.0)  # seconds kept before and after the stretch, so a clip can start earlier (the hook) or end later
+HAND_PAD = (60.0, 5.0)   # Clip last 30s / 60s: a whole minute more before, so nothing that led up to it is lost
 POST_KEYS = ("hook", "title", "description", "hashtags", "highlight_words", "category", "rating")
 _lock = threading.RLock()
 
@@ -34,9 +35,15 @@ def _drop_file(job, g):
         (Path(job["dir"]) / f).unlink(missing_ok=True)
 
 
-def add(s, v, clip=None):
+def _pad(g):
+    p = g.get("pad")
+    return (float(p[0]), float(p[1])) if isinstance(p, (list, tuple)) and len(p) == 2 else PAD
+
+
+def add(s, v, clip=None, pad=None, auto=False):
     """A decision on the live card that offers a stretch: keep it as a suggestion. `clip` is the AI's own moment
-    when it gave one: its hook, title and post text become the draft's. Returns its id."""
+    when it gave one: its hook, title and post text become the draft's. `pad`: seconds kept before and after.
+    `auto`: it becomes a draft clip by itself as soon as its piece is saved (Clip last 30s). Returns its id."""
     job = s.job
     with _lock:
         n = int(job.get("next_sug") or 1)
@@ -48,6 +55,10 @@ def add(s, v, clip=None):
              "viral": v.get("viral") if v.get("viral") is not None else (clip or {}).get("score"),   # out of 100; None: never rated
              "marks": v.get("marks"),          # hook, share, engagement, emotion, out of 10 each
              "hold": {"status": "waiting", "file": None, "from": None, "to": None, "error": None}}
+        if pad:
+            g["pad"] = [float(pad[0]), float(pad[1])]
+        if auto:
+            g["auto"] = True
         for k in POST_KEYS:
             if clip and clip.get(k):
                 g[k] = clip[k]
@@ -64,7 +75,8 @@ def flush(s):
     """Suggestions whose stretch is fully recorded now (or the stream has ended): save their pieces."""
     with s.lock:
         reach = s.segments[-1][2] if s.segments else 0.0
-    due = [g for g in _list(s.job) if g["hold"]["status"] == "waiting" and (s.ended or reach >= g["end"] + PAD + 1)]
+    due = [g for g in _list(s.job) if g["hold"]["status"] == "waiting"
+           and (s.ended or s.user_stopped or reach >= g["end"] + _pad(g)[1] + 1)]
     for g in due:
         g["hold"]["status"] = "saving"
     if due:
@@ -74,12 +86,14 @@ def flush(s):
 
 
 def save_hold(s, g):
-    """Copy the stretch, with PAD either side, out of the rolling buffer into suggest/<id>.mp4 (no re-encoding; mp4
-    so the editor can play it), and note where it starts and ends on the transcript clock."""
+    """Copy the stretch, with its padding before and after, out of the rolling buffer into suggest/<id>.mp4 (no
+    re-encoding; mp4 so the editor can play it), and note where it starts and ends on the transcript clock. One the
+    clipper asked for with Clip last 30s becomes a draft clip straight away."""
     h = g["hold"]
     if get(s.job, g["id"]) is None:          # deleted while it waited
         return
-    a, b = g["start"] - PAD, g["end"] + PAD
+    before, after = _pad(g)
+    a, b = g["start"] - before, g["end"] + after
     with s.lock:
         segs = [x for x in s.segments if x[2] > a and x[1] < b and x[0].exists()]
     if not segs or segs[0][1] > g["start"] + 2:
@@ -109,6 +123,26 @@ def save_hold(s, g):
     h.update(status="ready", file=f"suggest/{g['id']}.mp4", **{"from": round(offset, 2), "to": round(offset + dur, 2)},
              error=None)
     jobs.save(s.job)
+    if g.get("auto"):
+        try:
+            clip(s.job, g["id"])
+        except Exception as e:  # noqa: BLE001 - it stays in the list, where Clip still works
+            g.pop("auto", None)
+            g["why"] = "Could not open it as a draft by itself: " + safe.friendly(e, 200)
+            jobs.save(s.job)
+
+
+def add_hand(s, seconds, end):
+    """Clip last 30s / 60s on a recording: the last `seconds` become a draft clip (with a minute more kept before
+    it, so an earlier start can still catch the hook), set up in the editor before anything is made. Returns the
+    suggestion's id; the draft appears once its piece is saved, a few seconds later."""
+    start = max(0.0, end - seconds)
+    with s.lock:
+        heard = [w["w"] for w in s.words if start <= w["s"] <= end]
+    text = ("\u2026 " if len(heard) > 24 else "") + " ".join(heard[-24:])[:200].strip()
+    v = {"t": round(end), "start": round(start, 2), "end": round(end, 2), "result": f"Clipped by you: the last {int(seconds)}s",
+         "summary": ("\u201c" + text + "\u201d") if heard else "", "why": ""}
+    return add(s, v, pad=HAND_PAD, auto=True)
 
 
 def _words(job):

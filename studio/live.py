@@ -17,7 +17,8 @@ from . import alerts, auth, brain, config, creators, ctx, facecam, games, jobs, 
 
 SESSIONS: dict = {}
 SEG_SEC = 6           # length of each buffer piece
-PAD = 8               # seconds kept either side of a clip so it can be re-trimmed later
+PAD = 8               # seconds kept after a clip so it can be re-trimmed later
+PAD_BEFORE = 30       # and before it, more: an earlier start can still catch the hook
 CHECK_EVERY = 180     # look at the stream every 3 minutes...
 QUIET_MAX = 600       # ...but only ask the AI when something happened, or at most every 10 minutes when calm
 WINDOW = 240          # seconds of transcript shown to the AI per check
@@ -1152,7 +1153,7 @@ class Session:
                 break
             time.sleep(1)
         with self.lock:
-            segs = [s for s in self.segments if s[2] > clip["start"] - PAD and s[1] < clip["end"] + PAD and s[0].exists()]
+            segs = [s for s in self.segments if s[2] > clip["start"] - PAD_BEFORE and s[1] < clip["end"] + PAD and s[0].exists()]
         if not segs or segs[0][1] > clip["start"] + 2:
             clip.update(status="error", error="That part of the stream is no longer in the buffer.")
             jobs.save(self.job)
@@ -1215,9 +1216,13 @@ class Session:
         return guess
 
     def clip_last(self, seconds):
+        """Clip last 30s / 60s. On a recording that makes clips, the last seconds become a draft that opens in the
+        editor (returns the suggestion's id); in the Live Transcriber they are listed as a moment."""
         end = self.samples / SR
         if end < 5:
             raise ValueError("Nothing has been recorded yet.")
+        if not self.pick:
+            return suggest.add_hand(self, seconds, end)
         self.manual.append({"start": max(0.0, end - seconds), "end": end})
 
     def mark(self, t):

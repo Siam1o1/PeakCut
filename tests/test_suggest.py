@@ -205,6 +205,40 @@ with ctx.as_user(auth.LOCAL_ID):
     suggest.after_restart()
     check("a piece that was never saved before a restart says so", s6.job["suggestions"][0]["hold"]["status"], "error")
 
+# ---- Clip last 30s / 60s: a draft that opens in the editor, with a minute more kept before it
+with ctx.as_user(auth.LOCAL_ID):
+    sh = session(cr)
+    sh.samples = 150 * 16000                       # 2:30 recorded
+    sid = sh.clip_last(30)
+    gh = suggest.get(sh.job, sid)
+    check("Clip last 30s keeps the last 30 seconds as a suggestion that becomes a draft by itself",
+          (gh["start"], gh["end"], gh["pad"], gh.get("auto"), gh["result"]), (120.0, 150.0, [60.0, 5.0], True, "Clipped by you: the last 30s"))
+    check("...quoting what was said there", gh["summary"].endswith("w149\u201d"), True)
+    sh.user_stopped = True                         # nothing more comes in: save it now
+    n_rendered = len(rendered)
+    suggest.flush(sh)
+    dh = next((c for c in sh.job["clips"] if c.get("sug") == sid), None)
+    check("once its piece is saved it is a draft clip, nothing rendered", (bool(dh), dh and dh["status"], len(rendered) - n_rendered), (True, "draft", 0))
+    check("...the clip is the last 30 seconds", (dh["start"], dh["end"]), (120.0, 150.0))
+    check("...with a minute before it kept, so an earlier start catches the hook", dh["src_offset"] <= 60.5, True)
+    check("...and it leaves the suggestions", suggest.get(sh.job, sid), None)
+    sh.job["status"] = "done"
+    real_put = jobs._q.put
+    jobs._q.put = lambda *a, **k: None
+    jobs.request_render(sh.job["id"], dh["id"], {"start": -8, "end": 140})
+    check("a start before what is kept (even below 0) moves to the earliest kept second, never an error",
+          (dh["start"], dh["status"]), (dh["src_offset"], "queued"))
+    dh["status"] = "draft"
+    jobs.request_render(sh.job["id"], dh["id"], {"start": 70, "end": 9999})
+    check("...and an end past it to the last kept second", (dh["start"], dh["end"]), (70.0, dh["src_end"]))
+    jobs._q.put = real_put
+    sp = session(cr, mode="pick")
+    sp.samples = 150 * 16000
+    check("the Live Transcriber keeps its own hand moments", (sp.clip_last(30), len(sp.manual), sp.job.get("suggestions", [])),
+          (None, 1, []))
+    check("the AI's suggestions keep 30 s before and 10 s after", suggest.PAD, (30.0, 10.0))
+    check("clips the AI makes keep 30 s before them too", live.PAD_BEFORE, 30)
+
 # ---- the routes
 BASE = "http://127.0.0.1:8765"
 H = {"Origin": BASE}

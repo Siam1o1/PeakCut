@@ -1288,10 +1288,10 @@ def clip_now(jid: str, body: dict = Body(...)):
     if len(s.manual) >= 3:
         raise HTTPException(429, "Give it a moment: your last clips are still being made.")
     try:
-        s.clip_last(max(5, min(180, float(body.get("seconds", 30)))))
+        sid = s.clip_last(max(5, min(180, float(body.get("seconds", 30)))))
     except (ValueError, TypeError) as e:
         raise HTTPException(400, str(e))
-    return {"ok": True}
+    return {"ok": True, "sid": sid}       # sid: the draft's suggestion, opened in the editor once it is saved
 
 
 @app.post("/api/live/{jid}/decisions/{vid}")
