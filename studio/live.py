@@ -142,6 +142,8 @@ class Session:
         self.raid_until = 0                  # stream second until which chat words are not kept (a raid just arrived)
         self.words_read = 0                  # the second chat was last read for what it says
         self.conv_hist = []                  # (second, convergence) of each chat window read, last 15 minutes
+        self.lag = 5                         # seconds chat takes to react after the streamer, measured every 5 minutes
+        self.lag_at = 0                      # the second the lag was last measured
         self.chat_total = 0
         self.chat_on = False
         self.last_check = 0.0
@@ -178,7 +180,7 @@ class Session:
         self.facecam_checked = False  # the look is made once, even when it finds nothing
         self.ai_busy = 0.0            # when the AI check now running was started, 0 when none is
 
-    def _ask_ai(self, window=None, why=None, score=None):
+    def _ask_ai(self, window=None, why=None, score=None, peak=None):
         """Ask the AI on its own thread, so a slow answer never stops the recording.
 
         While the AI thinks, the speech keeps being written and a "clip that" still works. One check
@@ -190,7 +192,7 @@ class Session:
 
         def work():
             try:
-                self._ai_check(window, why, score)
+                self._ai_check(window, why, score, peak)
             except Exception as e:  # noqa: BLE001
                 self.job["ai"]["last_error"] = str(e)[-200:]
             finally:
@@ -331,7 +333,8 @@ class Session:
     def _viewer_burst(self, b):
         why = f"Viewers clipped this ({b['people']} people)"
         if self.pick:      # like a mark made by hand: always listed
-            picks.add_point(self, {"start": max(0.0, b["t"] - 30), "end": b["t"] + 10, "peak": b["t"], "score": 0,
+            start, end = self._edges(b["t"]) if self._timing() else (max(0.0, b["t"] - 30), b["t"] + 10)
+            picks.add_point(self, {"start": start, "end": end, "peak": b["t"], "score": 0,
                                    "reason": why, "from": "viewers"})
         else:              # sent to the AI like a jump, and strong enough to rank high; waits if another jump is pending
             self.viewer_queue.append(b)
@@ -524,7 +527,7 @@ class Session:
             why = f"Chat: {said} people said {w['top'][:25].upper()}" + (f" ({w['top_kind']})" if w["top_kind"] else "")
             strength = w["convergence"]
         if why and not self.spike and end - self.last_spike >= self.AUTO_GAP:
-            self.spike = {"t": float(end - 3), "why": why, "z": jz + 2 * strength, "chat": w}
+            self.spike = {"t": max(0.0, float(end - 3) - self._shift()), "why": why, "z": jz + 2 * strength, "chat": w}
             self.last_spike = end
             self.spikes += 1
 
@@ -634,6 +637,7 @@ class Session:
         else:
             self._watch_spikes_old()
         self._watch_chat_words(len(self.db))
+        self._watch_lag(len(self.db))
         if self.conv_hist:
             self.base["conv"] = round(self.conv_hist[-1][1], 2)     # the card shows how much chat agrees
 
@@ -691,11 +695,52 @@ class Session:
         if zc >= jz:
             why.append(f"chat z {zc:.1f}")
         if why and not self.spike and n - self.last_spike >= self.AUTO_GAP:
-            self.spike = {"t": float(n - 3), "why": ", ".join(why), "z": max(zl, zc)}
+            chat_only = zc >= jz and zl < jz      # only a reaction in chat: the streamer did it a few seconds earlier
+            self.spike = {"t": max(0.0, float(n - 3) - (self._shift() if chat_only else 0)), "why": ", ".join(why),
+                          "z": max(zl, zc)}
             self.last_spike = n
             self.spikes += 1
 
-    def _ai_check(self, window=None, why=None, score=None):
+    def _timing(self):
+        return bool(self.settings.get("sig_timing", True))
+
+    def _shift(self):
+        """Seconds to move a chat-born moment back, so it lands on what the streamer did, not on the reaction."""
+        return self.lag if self._timing() else 0
+
+    def _watch_lag(self, n):
+        """Every 5 minutes, measure how many seconds chat follows loudness in this stream."""
+        if not self._timing() or n < 300 or n - self.lag_at < 300:
+            return
+        self.lag_at = n
+        with self.lock:
+            loud = 10 ** (np.array(self.db[-900:], dtype=np.float64) / 20)
+        series, _ = self._chat_series(n - 1, 900)
+        if series:
+            self.lag = signals.measure_lag(loud, series)
+
+    def _calm_after(self, t):
+        """The first second after t when chat agreed no more than usual again (convergence z under 1), or None
+        when there are no chat readings."""
+        hist = list(self.conv_hist)
+        base = [c for s, c in hist if s <= t] or [c for _, c in hist]
+        for s, c in hist:
+            if s > t and signals.robust_z(base, c, floor=0.1) < 1:
+                return s
+        return None
+
+    def _edges(self, t):
+        """(start, end) of a clip for a moment at second t. With smart edges: from the sentence that sets it up to
+        the sentence end once chat has calmed down. Otherwise the old fixed stretch around it."""
+        if not self._timing():
+            return max(0.0, t - self.AUTO_BEFORE), t + self.AUTO_AFTER
+        st = self.settings
+        with self.lock:
+            words = [w for w in self.words if t - 90 <= w["s"] <= t + float(st["max_len"]) + 30]
+        return signals.clip_edges(t, brain.make_lines(words), float(st["min_len"]), float(st["max_len"]),
+                                  self._calm_after(t))
+
+    def _ai_check(self, window=None, why=None, score=None, peak=None):
         """Judge 1 reads only the words. If it finds a moment, judge 2 reads only the loudness and chat activity
         for the same stretch, without seeing the words. A clip is made when both say yes (or as set in Setup)."""
         st = self.settings
@@ -735,7 +780,11 @@ class Session:
             if self.pick and window:      # no AI: a jump in loudness or chat, or "clip it", is still worth listing
                 jump = (why or "").startswith("Jump")
                 t = now - (self.AUTO_AFTER if jump else self.SAID_AFTER + 5)
-                picks.add_point(self, {"start": ws, "end": now, "peak": max(ws, t), "score": 0, "reason": why or "",
+                a, b = ws, now
+                if jump and peak is not None and self._timing():
+                    a, b = self._edges(peak)
+                    t = peak
+                picks.add_point(self, {"start": a, "end": b, "peak": max(a, t), "score": 0, "reason": why or "",
                                        "from": "jump" if jump else "said"})
             return self._verdict(verdict, "AI error: " + str(e)[-80:])
         self.checks += 1
@@ -988,7 +1037,11 @@ class Session:
                     self._ask_ai((said["t"] - self.SAID_BEFORE, said["t"] + self.SAID_AFTER), said["why"])
                 elif sp and (self.t_done >= sp["t"] + self.AUTO_AFTER or (self.ended and not busy)):
                     self.spike = None
-                    self._ask_ai((sp["t"] - self.AUTO_BEFORE, sp["t"] + self.AUTO_AFTER), "Jump: " + sp["why"], sp.get("z"))
+                    if self._timing():
+                        a, b = self._edges(sp["t"])
+                        self._ask_ai((a - 10, b + 5), "Jump: " + sp["why"], sp.get("z"), peak=sp["t"])
+                    else:
+                        self._ask_ai((sp["t"] - self.AUTO_BEFORE, sp["t"] + self.AUTO_AFTER), "Jump: " + sp["why"], sp.get("z"))
                 elif self.t_done - self.last_check >= every * 60 or (self.ended and not busy and self.t_done > self.last_check):
                     self._ask_ai()
                 self._publish()

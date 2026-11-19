@@ -189,3 +189,32 @@ def word_lists(settings):
         raw = str((settings or {}).get(f"words_{kind}") or "").strip()
         out[kind] = [w.strip().lower() for w in raw.split(",") if w.strip()] or list(default)
     return out
+
+
+def measure_lag(loud, chat, max_lag=20, default=5):
+    """How many seconds chat reacts after the streamer does: the shift that lines the two up best."""
+    a = np.asarray(loud, dtype=np.float64); b = np.asarray(chat, dtype=np.float64)
+    n = min(a.size, b.size)
+    if n < 120 or b[:n].std() < 1e-9 or a[:n].std() < 1e-9:
+        return default
+    a = (a[:n] - a[:n].mean()) / a[:n].std(); b = (b[:n] - b[:n].mean()) / b[:n].std()
+    best, best_r = default, 0.1
+    for lag in range(0, max_lag + 1):
+        r = float(np.mean(a[: n - lag] * b[lag:]))
+        if r > best_r:
+            best, best_r = lag, r
+    return best
+
+
+def clip_edges(peak, lines, min_len, max_len, calm_after=None, lead_min=3):
+    """Where a clip around `peak` starts and ends: at the start of the sentence that sets it up, and at the end of
+    the sentence after chat has calmed down, kept within min_len and max_len."""
+    starts = [l["s"] for l in lines if l["s"] <= peak - lead_min]
+    start = max(starts) if starts else peak - lead_min
+    want_end = max(peak + 2, calm_after if calm_after is not None else peak + 2)
+    ends = [l["e"] for l in lines if l["e"] >= want_end]
+    end = min(ends) if ends else want_end
+    end = min(max(end, start + min_len), start + max_len)
+    if end - start < min_len:
+        start = end - min_len
+    return round(max(0.0, start), 2), round(end, 2)

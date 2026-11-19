@@ -1916,6 +1916,7 @@ function drawCreatorForm() {
         <label class="f">How unusual a jump must be<input data-k="jump_z" type="number" step="0.5" min="2" max="8" value="${c.jump_z ?? 3.5}"></label>
         <label class="sw span"><input type="checkbox" data-k="sig_chat_words" ${c.sig_chat_words === false ? "" : "checked"}><span>Read what chat says<small>A crowd sending the same word or emote, or several people asking for a clip, counts as a jump. Bots, copied messages and raids are ignored.</small></span></label>
         <label class="sw span"><input type="checkbox" data-k="sig_viewer_clips" ${c.sig_viewer_clips === false ? "" : "checked"}><span>Use viewers' Twitch clips<small>Needs TWITCH_CLIENT_ID and TWITCH_CLIENT_SECRET in .env</small></span></label>
+        <label class="sw span"><input type="checkbox" data-k="sig_timing" ${c.sig_timing === false ? "" : "checked"}><span>Smart clip edges<small>Start a clip at the sentence that sets it up and end it when chat has calmed down, and allow for the seconds chat takes to react</small></span></label>
         <label class="f">Chat window (seconds)<input data-k="chat_window" type="number" min="5" max="10" value="${c.chat_window ?? 8}"></label>
         <label class="f">Laugh words<input data-k="words_laugh" value="${esc(c.words_laugh || "")}" placeholder="${esc(DEFAULT_WORDS.laugh)}"></label>
         <label class="f">Shock words<input data-k="words_shock" value="${esc(c.words_shock || "")}" placeholder="${esc(DEFAULT_WORDS.shock)}"></label>

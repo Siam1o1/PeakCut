@@ -289,4 +289,71 @@ cw = session(); cw.db = calm_db[:100]; cw.words_read = 76
 cw._watch_spikes()
 check("missed windows are all read in order", [t for t, _ in cw.conv_hist], [84, 92, 100])
 
+# ---- timing: chat lag, and where a clip starts and ends
+loud = np.zeros(600); chat = np.zeros(600)
+for p_ in (100, 250, 400): loud[p_:p_+3] = 10; chat[p_+7:p_+10] = 10
+check("chat that follows loudness by 7 s has a lag of 7", signals.measure_lag(loud, chat), 7)
+check("no relation: the default", signals.measure_lag(np.random.default_rng(1).random(600), np.zeros(600)), 5)
+lines = [{"s": 0, "e": 4, "text": "a"}, {"s": 5, "e": 9, "text": "b"}, {"s": 10, "e": 14, "text": "c"},
+         {"s": 15, "e": 19, "text": "d"}, {"s": 20, "e": 24, "text": "e"}, {"s": 25, "e": 29, "text": "f."}]
+s_, e_ = signals.clip_edges(16, lines, min_len=10, max_len=30, calm_after=22)
+check("starts at a sentence start at least 3 s before the peak", s_, 10)
+check("ends at the sentence end after chat calms down", e_, 24)
+s_, e_ = signals.clip_edges(16, lines, min_len=10, max_len=12, calm_after=40)
+check("never longer than max_len", e_ - s_ <= 12)
+s_, e_ = signals.clip_edges(16, lines, min_len=20, max_len=30, calm_after=None)
+check("never shorter than min_len", e_ - s_ >= 20)
+check("the setting is on by default", creators.DEFAULTS["sig_timing"], True)
+check("the setting is kept as a bool", creators._clean({"sig_timing": 0})["sig_timing"], False)
+tw = [{"s": float(i), "e": i + 0.8, "w": ("go." if i % 5 == 4 else "w")} for i in range(300)]
+# the lag is re-measured every 5 minutes
+tl = session(); tl.db = [-30.0] * 700
+for p_ in (100, 250, 400, 550): tl.db[p_:p_+3] = [-10.0] * 3
+tl.chat_on = True
+for t_ in range(700): tl.chat_users[t_] = {f"q{t_}"} if t_ % 2 else set()
+for p_ in (100, 250, 400, 550):
+    for t_ in range(p_ + 7, p_ + 10): tl.chat_users[t_] = {f"y{t_}_{i}" for i in range(6)}
+tl._watch_lag(700)
+check("the session measures the chat lag", tl.lag, 7)
+tl.lag_at = 700; tl.db = [-30.0] * 800; tl._watch_lag(800)
+check("not measured again within 5 minutes", tl.lag, 7)
+# a chat jump is shifted back by the lag; a loudness jump is not
+sh = session(); sh.lag = 6; sh.db = calm_db + [-30.0] * 5
+sh.chat_on = True
+sh.chat_users = {t: {f"p{t}"} for t in range(0, 905, 2)}
+for t in range(900, 905): sh.chat_users[t] = {f"x{t}_{i}" for i in range(8)}
+sh._watch_spikes()
+check("a chat-born spike is shifted back by the lag", sh.spike and sh.spike["t"], 902 - 6)
+sh = session(); sh.lag = 6; sh.db = calm_db + [-12.0] * 5; sh._watch_spikes()
+check("a loudness spike is not shifted", sh.spike and sh.spike["t"], 902)
+sh = session(sig_timing=False); sh.lag = 6; sh.db = calm_db + [-30.0] * 5; sh.chat_on = True
+sh.chat_users = {t: {f"p{t}"} for t in range(0, 905, 2)}
+for t in range(900, 905): sh.chat_users[t] = {f"x{t}_{i}" for i in range(8)}
+sh._watch_spikes()
+check("timing off: no shift", sh.spike and sh.spike["t"], 902)
+sh = session(); sh.lag = 6; sh.db = calm_db[:100]
+for s_ in range(92, 100): talk(sh, s_, 1)
+sh._watch_spikes()
+check("a chat-words spike is shifted back too", sh.spike and sh.spike["t"], 97 - 6)
+# edges: a sentence start before the moment, and the first calm reading after it
+ed = session(min_len=10, max_len=40); ed.words = tw
+ed.conv_hist = [(100 + 8 * i, 0.9 if i < 3 else 0.1) for i in range(6)] + [(60, 0.1), (68, 0.1), (76, 0.1), (84, 0.1)]
+ed.conv_hist.sort()
+check("calm_after is the first reading under z 1 after the moment", ed._calm_after(101), 124)
+check("calm_after is None without readings", session()._calm_after(50), None)
+a_, b_ = ed._edges(101)
+check("edges start at a sentence start before the moment", (a_ <= 98, b_ >= 124), (True, True))
+ed2 = session(sig_timing=False); ed2.words = tw
+check("timing off: the old fixed window", ed2._edges(101), (71.0, 121.0))
+# the no-AI fallback in pick mode lists the edges
+fb = session(min_len=10, max_len=40); fb.pick = True; fb.words = tw; fb.t_done = 250
+fb.job["points"] = []
+import studio.brain as _brain
+_old = _brain.judge_transcript
+def _boom(*a, **k): raise RuntimeError("no ai")
+_brain.judge_transcript = _boom
+fb._ai_check((70, 130), "Jump: x", 5.0, peak=100)
+_brain.judge_transcript = _old
+check("the fallback lists a point from the edges", len(fb.job["points"]) == 1 and fb.job["points"][0]["end"] - fb.job["points"][0]["start"] >= 10, True)
+
 print("ALL PASSED" if not fails else f"{len(fails)} failed"); sys.exit(1 if fails else 0)
