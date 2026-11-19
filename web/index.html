@@ -1414,9 +1414,12 @@ function drawAdd(variant) {
         <label><input type="checkbox" id="o_captions" data-caption-toggle ${c?.captions === false ? "" : "checked"}>Generate captions</label></div>
         ${choice("o_style", Object.entries(S.status.styles).map(([k, v]) => ({v:k, label:v, prev:capPrev(k)})), c?.style ?? "bounce", c?.captions === false)}</div>
       <div class="ob"><div class="ot">Layout</div>${choice("o_layout", Object.entries(S.status.layouts).map(([k, v]) => ({v:k, label:LAYOUT_SHORT[k] || v, title:v, prev:`<span class="lay-prev ${esc(k)}"><span class="ph"><i></i></span></span>`})), c?.layout ?? "blur")}</div>
-      <div class="ob"><div class="ot">Video quality</div><input type="hidden" id="o_quality" value="720"><div class="seg" role="group" aria-label="Video quality">
+      <div class="ob"><div class="ot">Download quality</div><input type="hidden" id="o_quality" value="720"><div class="seg" role="group" aria-label="Download quality">
         <button type="button" data-seg="o_quality" data-v="720" aria-pressed="true">720p<small>Fast</small></button>
         <button type="button" data-seg="o_quality" data-v="1080" aria-pressed="false">1080p<small>Sharper, about 2x slower</small></button></div></div>
+      <div class="ob"><div class="ot">Export size</div><input type="hidden" id="o_res" value="${c?.res ?? 1080}"><div class="seg" role="group" aria-label="Export size">
+        <button type="button" data-seg="o_res" data-v="720" aria-pressed="${(c?.res ?? 1080) == 720}">720p<small>720x1280, smaller file</small></button>
+        <button type="button" data-seg="o_res" data-v="1080" aria-pressed="${(c?.res ?? 1080) == 1080}">1080p<small>1080x1920</small></button></div></div>
       <div class="ob"><div class="ot">Part of the video</div><div class="range">
         <label>From<input id="o_from" type="number" min="0" placeholder="start" aria-label="From minute">min</label>${ic("arrowr")}
         <label>To<input id="o_to" type="number" min="0" placeholder="end" aria-label="Up to minute">min</label></div></div>
@@ -1479,7 +1482,7 @@ document.addEventListener("keydown", e => {
 const targetCreator = () => creatorId() || $("#o_creator")?.value || "";
 function jobOptions() {
   const n = id => { const v = $(id).value; return v === "" ? null : Number(v); };
-  const o = {max_clips:n("#o_max"), min_len:n("#o_min"), max_len:n("#o_maxlen"), captions:$("#o_captions").checked, style:$("#o_style").value, layout:$("#o_layout").value, quality:n("#o_quality")};
+  const o = {max_clips:n("#o_max"), min_len:n("#o_min"), max_len:n("#o_maxlen"), captions:$("#o_captions").checked, style:$("#o_style").value, layout:$("#o_layout").value, quality:n("#o_quality"), res:n("#o_res")};
   if (n("#o_from") !== null) o.range_start = n("#o_from") * 60;
   if (n("#o_to") !== null) o.range_end = n("#o_to") * 60;
   return o;
@@ -2195,6 +2198,7 @@ function drawClipDlg(full) {
         <label class="sw"><input type="checkbox" data-f="captions" data-caption-toggle ${c.captions === false ? "" : "checked"}>Generate captions</label>
         <div class="two"><label class="f">Caption style<select data-f="style" data-caption-style ${c.captions === false ? "disabled" : ""}>${opts(S.status.styles, c.style)}</select></label>
           <label class="f">Layout<select data-f="layout">${opts(S.status.layouts, c.layout)}</select></label></div>
+        <label class="f">Export size<select data-f="res">${opts({720:"720p (720x1280)", 1080:"1080p (1080x1920)"}, c.res || 1080)}</select></label>
         <p class="sub">For ‘Game top, cam below’: <button type="button" class="btn sm" data-act="clipboxes">${c.split || S.creators.find(x => x.id === j.creator)?.split ? "Change the facecam box" : "Draw the facecam box"}</button></p>
         <div class="two"><label class="f">Start (seconds)<input data-f="start" type="number" step="0.5" value="${c.start}"></label>
           <label class="f">End (seconds)<input data-f="end" type="number" step="0.5" value="${c.end}"></label></div>
@@ -2382,12 +2386,14 @@ function openCutEdit(jid, cutId) {
     <label class="f">Big text<input id="ce_hook" maxlength="60" placeholder="Leave empty and the AI writes one"></label>
     <div class="ob"><div class="ot">Caption style</div>${choice("ce_style", Object.entries(S.status.styles).map(([k, v]) => ({v:k, label:v, prev:capPrev(k)})), cr.style || "bounce")}</div>
     <div class="ob"><div class="ot">Layout</div>${choice("ce_layout", Object.entries(S.status.layouts).map(([k, v]) => ({v:k, label:LAYOUT_SHORT[k] || v, title:v, prev:`<span class="lay-prev ${esc(k)}"><span class="ph"><i></i></span></span>`})), cr.layout || "blur")}</div>
+    <div class="ob"><div class="ot">Export size</div>${choice("ce_res", [{v:720, label:"720p", prev:"<b>720x1280</b>"}, {v:1080, label:"1080p", prev:"<b>1080x1920</b>"}], cr.res || 1080)}
+      <p class="sub">Live streams are recorded at up to 720p, so 1080p from a stream is made larger, not sharper.</p></div>
     <p class="sub" id="ce_box">${split ? "Facecam box saved for this creator." : "For ‘Game top, cam below’, draw the facecam box once."} <button type="button" class="btn sm" id="ce_draw">${split ? "Change the boxes" : "Draw the facecam box"}</button></p>
     <div class="dlg-foot"><button type="button" class="btn" id="ce_no">Cancel</button><button type="button" class="btn primary" id="ce_go">${ic("scissors")}Make vertical clip</button></div></form>`;
   let sending = false;
   const go_ = async () => {
     if (sending) return;
-    const body = {hook: $("#ce_hook").value.trim(), style: $("#ce_style").value, layout: $("#ce_layout").value};
+    const body = {hook: $("#ce_hook").value.trim(), style: $("#ce_style").value, layout: $("#ce_layout").value, res: Number($("#ce_res").value)};
     if (body.layout === "split") { if (!split) return openBoxes(frame, j.creator, null, s => { split = s; go_(); }); body.split = split; }
     sending = true;
     try {

@@ -247,13 +247,14 @@ def edit_cut(job, cut_id, options):
     st, ly = options.get("style"), options.get("layout")
     style = st if isinstance(st, str) and st in render.STYLES else cr.get("style", "bounce")
     layout = ly if isinstance(ly, str) and ly in render.LAYOUTS else cr.get("layout", "blur")
+    res = int(options["res"]) if str(options.get("res")) in ("720", "1080") else cr.get("res", 1080)
     hook = str(options.get("hook") or "").strip()[:60]
     boxes = render.clean_split(options.get("split"))
     words = [dict(w, s=round(w["s"] - cut["start"], 2), e=round(w["e"] - cut["start"], 2))
              for w in _words_of(job) if cut["start"] <= w["s"] <= cut["end"]]
     m, s = divmod(int(p["t"]), 60)
     new = jobs.create({"type": "cut", "path": "", "name": f"{job.get('title') or 'Live stream'} at {m}:{s:02d}"},
-                      {"style": style, "layout": layout}, enqueue=False, creator=job.get("creator"))
+                      {"style": style, "layout": layout, "res": res}, enqueue=False, creator=job.get("creator"))
     dest = Path(new["dir"]) / "source.mp4"
     try:
         shutil.copyfile(Path(job["dir"]) / cut["file"], dest)
@@ -264,7 +265,7 @@ def edit_cut(job, cut_id, options):
     (Path(new["dir"]) / "words.json").write_text(json.dumps(words), encoding="utf-8")
     clip = {"id": "clip001", "start": 0.0, "end": round(meta["duration"], 2), "score": p["score"],
             "reason": p["reason"], "hook": hook, "title": new["source"]["name"], "description": "", "hashtags": [], "highlight_words": [],
-            "category": "other", "style": style, "layout": layout, "status": "queued", "version": 0,
+            "category": "other", "style": style, "layout": layout, "res": res, "status": "queued", "version": 0,
             "made_at": time.time()}
     if boxes:
         clip["split"] = boxes

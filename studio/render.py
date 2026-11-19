@@ -312,6 +312,7 @@ def _hook_y(layout, hook_y, facecam=None):
 
 
 _qsv_ok = None
+RES = {720: (720, 1280), 1080: (1080, 1920)}      # the two export sizes (width, height)
 RENDER_SECONDS = 600      # one clip's video encode; far beyond normal, so a frozen encoder is stopped, not waited on
 
 
@@ -333,19 +334,22 @@ def render_clip(src: Path, out_dir: Path, name: str, clip: dict, words: list, sr
     # break the filter syntax).
     work = Path(tempfile.mkdtemp(prefix="pk"))
     try:
-        return _render_in(work, src, out_dir, name, start, end, layout, fg_h, ass, face=face, split=split)
+        res = clip.get("res") if clip.get("res") in RES else 1080
+        return _render_in(work, src, out_dir, name, start, end, layout, fg_h, ass, face=face, split=split, res=res)
     finally:
         shutil.rmtree(work, ignore_errors=True)
 
 
 def _render_in(work: Path, src: Path, out_dir: Path, name: str, start, end, layout, fg_h, ass: str, face=None,
-               split=None) -> dict:
+               split=None, res=1080) -> dict:
     global _qsv_ok
     (work / f"{name}.ass").write_text(ass, encoding="utf-8")
     (work / "f").mkdir()
     for f in config.FONTS_DIR.glob("*.ttf"):
         shutil.copyfile(f, work / "f" / f.name)
-    fc = _filter(layout, fg_h, split if layout == "split" else face) + f"[v0]ass={name}.ass:fontsdir=f[v]"
+    # Captions are drawn at 1080 wide; for 720p the finished picture is shrunk as the very last step.
+    tail = "" if res == 1080 else f",scale={RES[res][0]}:{RES[res][1]}:flags=lanczos"
+    fc = _filter(layout, fg_h, split if layout == "split" else face) + f"[v0]ass={name}.ass:fontsdir=f{tail}[v]"
     base = ["ffmpeg", "-y", "-v", "error", "-ss", f"{start:.2f}", "-t", f"{end - start:.2f}", "-i", str(src),
             "-filter_complex", fc, "-map", "[v]", "-map", "0:a:0", "-af", "loudnorm=I=-14:TP=-1.5:LRA=11",
             "-c:a", "aac", "-b:a", "160k", "-ar", "48000", "-movflags", "+faststart", "-pix_fmt"]

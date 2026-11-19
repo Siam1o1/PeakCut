@@ -14,7 +14,7 @@ def _root() -> Path:
 
 _lock = threading.RLock()
 
-DEFAULTS = {"name": "", "channel": "", "style": "bounce", "layout": "blur", "captions": True, "min_len": 15, "max_len": 60,
+DEFAULTS = {"name": "", "channel": "", "style": "bounce", "layout": "blur", "res": 1080, "captions": True, "min_len": 15, "max_len": 60,
             "max_clips": 6, "min_score": 80, "auto_watch": False, "buffer_min": 20, "live_per_hour": 4, "ai_every_min": 3, "ai_only_on_spike": True, "auto_jump_pct": 60,
             "plan": "free", "decide_mode": "both", "must_clip_min": 0, "min_gap_min": 2,
             "game": "",
@@ -66,6 +66,8 @@ def _clean(data: dict) -> dict:
         if k in NUMERIC:
             lo, hi = NUMERIC[k]
             v = max(lo, min(hi, int(float(v))))
+        elif k == "res":
+            v = int(v) if str(v) in ("720", "1080") else 1080
         elif k in ("auto_watch", "autopost", "ai_only_on_spike"):
             v = bool(v)
         elif k == "channels":

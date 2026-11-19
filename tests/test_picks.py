@@ -193,6 +193,16 @@ try:
 except ValueError:
     said = "refused"
 check("an unknown layout falls back instead of failing", said, "accepted")
+from studio import media as _media
+new_r = picks.edit_cut(job, cm["id"], {"layout": "blur", "res": 720})
+cr_r = new_r["clips"][0]
+mr = _media.probe(Path(new_r["dir"]) / "clips" / cr_r["file"])
+check("Edit keeps the export size on the clip and renders it", (cr_r["res"], mr["width"], mr["height"]), (720, 720, 1280))
+check("...and the creator remembers it", creators.get(cr["id"])["res"], 720)
+new_j = picks.edit_cut(job, cm["id"], {"layout": "blur", "res": 999})
+check("a junk size falls back to the creator's choice", new_j["clips"][0]["res"], 720)
+new_k = picks.edit_cut(job, cm["id"], {"layout": "blur", "res": 1080})
+check("choosing 1080 is remembered too", (new_k["clips"][0]["res"], creators.get(cr["id"])["res"]), (1080, 1080))
 # ---- fix round: a restart renders once, stream text stays data, error cuts say why
 check("the new video does not ask to be re-queued by hand (the loader already does)", "remake" in new, False)
 real_describe = brain.describe

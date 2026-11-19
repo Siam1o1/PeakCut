@@ -36,6 +36,26 @@ out = render.render_clip(src, Path(os.environ["PEAKCUT_DATA"]) / "out", "c1",
                          [{"w": "hello", "s": 0.2, "e": 0.6}, {"w": "there", "s": 0.7, "e": 1.1}], 1280, 720)
 meta = media.probe(Path(os.environ["PEAKCUT_DATA"]) / "out" / out["file"])
 check("a split clip is rendered at 1080x1920", (out["layout"], meta["width"], meta["height"]), ("split", 1080, 1920))
+for lay in ("split", "blur"):
+    o7 = render.render_clip(src, Path(os.environ["PEAKCUT_DATA"]) / "out", "r7" + lay,
+                            {"start": 0.0, "end": 3.0, "layout": lay, "split": BOXES, "hook": "TEST", "style": "bounce", "res": 720},
+                            [{"w": "hello", "s": 0.2, "e": 0.6}], 1280, 720)
+    m7 = media.probe(Path(os.environ["PEAKCUT_DATA"]) / "out" / o7["file"])
+    check(f"a {lay} clip with res 720 is rendered at 720x1280", (m7["width"], m7["height"]), (720, 1280))
+    from PIL import Image
+    with Image.open(Path(os.environ["PEAKCUT_DATA"]) / "out" / o7["cover"]) as cv:
+        check(f"...and its cover picture follows ({lay})", cv.size, (720, 1280))
+o9 = render.render_clip(src, Path(os.environ["PEAKCUT_DATA"]) / "out", "r9",
+                        {"start": 0.0, "end": 3.0, "layout": "blur", "hook": "", "style": "bounce", "res": 999}, [], 1280, 720)
+m9 = media.probe(Path(os.environ["PEAKCUT_DATA"]) / "out" / o9["file"])
+check("an unknown res renders at 1080x1920", (m9["width"], m9["height"]), (1080, 1920))
+
+# ---- the export size as an option and a creator setting
+from studio import jobs as _jobs
+check("res 720 is kept", _jobs.clean_options({"res": 720}), {"res": 720})
+check("res as text is kept", _jobs.clean_options({"res": "1080"}), {"res": 1080})
+check("an unknown res falls back to 1080", _jobs.clean_options({"res": 500}), {"res": 1080})
+check("the default res is 1080", _jobs.DEFAULTS["res"], 1080)
 
 # ---- boxes saved on the creator
 from studio import creators, ctx, jobs
@@ -44,10 +64,15 @@ cr = creators.create({"name": "Box Tester", "split": BOXES})
 check("a creator keeps their facecam boxes", creators.get(cr["id"])["split"], render.clean_split(BOXES))
 check("junk boxes are not kept", creators.update(cr["id"], {"split": {"cam": "x"}})["split"], None)
 creators.update(cr["id"], {"split": BOXES})
+check("a creator starts at 1080", creators.get(cr["id"])["res"], 1080)
+check("a creator keeps 720", creators.update(cr["id"], {"res": 720})["res"], 720)
+check("a junk res becomes 1080", creators.update(cr["id"], {"res": 5})["res"], 1080)
+creators.update(cr["id"], {"res": 720})
 job = jobs.create({"type": "file", "path": str(src), "name": "src.mp4"}, {"layout": "split"}, enqueue=False, creator=cr["id"])
 job.update(source_path=str(src), width=1280, height=720, duration=4.0, status="done",
            clips=[{"id": "clip001", "start": 0.0, "end": 3.0, "score": 0, "hook": "", "title": "", "description": "",
                    "hashtags": [], "highlight_words": [], "style": "bounce", "layout": "split", "status": "queued", "version": 0}])
+check("a new video takes the creator's export size", job["options"]["res"], 720)
 brain_fail = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("no AI in tests"))
 from studio import brain; brain.ask_ai = brain_fail
 jobs.render_one(job, job["clips"][0], [{"w": "hello", "s": 0.2, "e": 0.6}])
@@ -57,6 +82,11 @@ check("a split clip with no boxes of its own uses the creator's", (c0["status"],
 jobs._q.put = lambda *a, **k: None                       # nothing is rendered by this check, only recorded
 jobs.request_render(job["id"], "clip001", {"layout": "split", "split": {"cam": [0, 0, 0.3, 0.3], "cam_pct": 30}})
 check("re-making a clip can change its boxes", job["clips"][0]["split"], {"cam": [0.0, 0.0, 0.3, 0.3], "game": [0.0, 0.0, 1.0, 1.0], "cam_pct": 30})
+
+jobs.request_render(job["id"], "clip001", {"res": "720"})
+check("re-making a clip can change its export size", job["clips"][0]["res"], 720)
+jobs.request_render(job["id"], "clip001", {"res": 12})
+check("a junk size when re-making falls back to 1080", job["clips"][0]["res"], 1080)
 
 print("ALL PASSED" if not fails else f"{len(fails)} failed")
 sys.exit(1 if fails else 0)

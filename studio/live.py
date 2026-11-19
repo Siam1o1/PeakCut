@@ -590,7 +590,7 @@ class Session:
         if self.pick:
             return picks.add_point(self, c)
         self.n += 1
-        c.update(id=f"clip{self.n:03d}", style=self.settings["style"], layout=self.settings["layout"],
+        c.update(id=f"clip{self.n:03d}", style=self.settings["style"], layout=self.settings["layout"], res=self.settings.get("res", 1080),
                  captions=self.job["options"].get("captions", True), status="queued", version=0, made_at=time.time())
         with self.lock:
             self.job["clips"].append(c)

@@ -107,7 +107,7 @@ _by_user: dict = {}                       # user -> {job id: job}: listing one p
 _lock = threading.RLock()
 on_clip_ready: list = []   # callbacks (job, clip), run once when a clip first finishes
 
-DEFAULTS = {"max_clips": 6, "min_len": 15, "max_len": 60, "style": "bounce", "layout": "blur", "quality": 720,
+DEFAULTS = {"max_clips": 6, "min_len": 15, "max_len": 60, "style": "bounce", "layout": "blur", "quality": 720, "res": 1080,
             "range_start": None, "range_end": None, "captions": True}
 
 
@@ -132,6 +132,8 @@ def clean_options(options) -> dict:
             v = v if v in render.STYLES else DEFAULTS["style"]
         elif k == "layout":
             v = v if v in render.LAYOUTS else DEFAULTS["layout"]
+        elif k == "res":                         # export size of the finished clip: 720p or 1080p
+            v = int(v) if str(v) in ("720", "1080") else DEFAULTS["res"]
         else:                                    # range_start, range_end: seconds into the video
             v = float(v)
             if not math.isfinite(v) or v < 0:
@@ -290,7 +292,7 @@ def create(source: dict, options: dict, enqueue=True, creator=None, kind="video"
     c = creators.get(creator) if creator else None
     if c:
         d = creators.root(c["id"]) / ("live" if kind == "live" else "videos") / jid
-        base = {**DEFAULTS, **{k: c[k] for k in ("max_clips", "min_len", "max_len", "style", "layout", "captions")}}
+        base = {**DEFAULTS, **{k: c[k] for k in ("max_clips", "min_len", "max_len", "style", "layout", "captions", "res")}}
     else:
         d, base, creator = config.user_dir(ctx.uid()) / "jobs" / jid, dict(DEFAULTS), None
     opts = {**base, **clean_options(options)}
@@ -365,6 +367,8 @@ def request_render(jid, cid, changes: dict):
             new[k] = str(changes[k])[:{"hook": 60, "title": 100, "description": 2000}.get(k, 20)]
     if "split" in changes:
         new["split"] = render.clean_split(changes["split"])
+    if "res" in changes:
+        new["res"] = clean_options({"res": changes["res"]}).get("res", 1080)
     if new.get("style") not in render.STYLES:
         new["style"] = DEFAULTS["style"]
     if new.get("layout") not in render.LAYOUTS:
@@ -398,6 +402,11 @@ def render_one(job, clip, words):
         near = _caption_words(job, clip, words, off) if clip.get("captions", True) else []
         out = render.render_clip(src, d / "clips", clip["id"], local, near, job["width"], job["height"])
         clip.update(out, status="done", version=clip.get("version", 0) + 1, error=None)
+        if job.get("creator") and clip.get("res") in (720, 1080):     # the creator's next clips use this size
+            try:
+                creators.update(job["creator"], {"res": clip["res"]})
+            except Exception:  # noqa: BLE001 - a creator deleted meanwhile must not fail the clip
+                pass
         post = {k: clip[k] for k in ("title", "description", "hashtags", "hook", "start", "end", "score")}
         (d / "clips" / f"{clip['id']}.json").write_text(json.dumps(post, indent=1), encoding="utf-8")
         if clip["version"] == 1:
@@ -768,7 +777,7 @@ def _run_job(job):
             found = keep
         for c in found:
             c.update(id=f"clip{len(job['clips']) + 1:02d}", start=round(c["start"] + shift, 2),
-                     end=round(c["end"] + shift, 2), style=o["style"], layout=o["layout"],
+                     end=round(c["end"] + shift, 2), style=o["style"], layout=o["layout"], res=o.get("res", 1080),
                      captions=o.get("captions", True), status="queued", version=0)
             # Only the gameplay layout uses a webcam, so it is only looked for then, and only once: a
             # stream with no webcam is not looked for again on every clip of it.
