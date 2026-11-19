@@ -12,7 +12,7 @@ from pathlib import Path
 
 import numpy as np
 
-from . import brain, creators, signals
+from . import brain, creators, ctx, signals
 
 MAX_WORDS = 400
 _lock = threading.Lock()
@@ -130,7 +130,9 @@ def prompt_block(cid):
 
 
 def seed(cid):
-    """The saved normal loudness and chat, for `signals.series_z` while a stream is too new to have a baseline."""
+    """The saved normal loudness and chat, for `signals.series_z` while a stream is too new to have a baseline. Chat
+    carries the unit it was counted in (`unit`: per 1,000 viewers or people), so it is only used for a stream counted
+    the same way."""
     try:
         if not enabled(cid):
             return {}
@@ -142,6 +144,8 @@ def seed(cid):
         v = nums.get(k)
         if isinstance(v, dict) and isinstance(v.get("median"), (int, float)) and isinstance(v.get("mad"), (int, float)):
             out[k] = {"median": float(v["median"]), "mad": float(v["mad"])}
+            if isinstance(v.get("unit"), str):
+                out[k]["unit"] = v["unit"]
     return out
 
 
@@ -156,16 +160,16 @@ def _mid(x):
 
 def _this_stream(s):
     """The numbers of this stream: middle and spread of loudness (plain level, the whole stream) and of chatters (only
-    the last stretch whose names are still kept), middle convergence, lag."""
+    the last stretch whose names are still kept, with the unit they were counted in), middle convergence, lag."""
     from . import live          # here, not at the top: live imports this file
     nums = {}
     n = len(s.db)
     if n >= 60:
         nums["loud"] = _mid(10 ** (np.array(s.db, dtype=np.float64) / 20))
         try:
-            series, _v = s._chat_series(n - 1, min(n, live.CHAT_KEEP))
+            series, v = s._chat_series(n - 1, min(n, live.CHAT_KEEP))
             if series:
-                nums["chat"] = _mid(series)
+                nums["chat"] = dict(_mid(series), unit=live.chat_unit(v))
         except Exception:  # noqa: BLE001
             pass
     conv = [c for _t, c in s.conv_hist]
@@ -176,12 +180,14 @@ def _this_stream(s):
 
 
 def _blend(old, new):
-    """New = 0.7 of what was saved + 0.3 of this stream, number by number."""
+    """New = 0.7 of what was saved + 0.3 of this stream, number by number. Numbers counted in another unit (chat per
+    1,000 viewers against chat in people) cannot be mixed: this stream's replace them."""
     out = dict(old)
     for k, v in new.items():
         o = old.get(k)
-        if isinstance(v, dict) and isinstance(o, dict):
-            out[k] = {f: round(0.7 * float(o.get(f, x)) + 0.3 * float(x), 6) for f, x in v.items()}
+        if isinstance(v, dict) and isinstance(o, dict) and o.get("unit") == v.get("unit"):
+            out[k] = {f: (x if isinstance(x, str) else round(0.7 * float(o.get(f, x)) + 0.3 * float(x), 6))
+                      for f, x in v.items()}
         elif isinstance(v, (int, float)) and isinstance(o, (int, float)):
             out[k] = round(0.7 * float(o) + 0.3 * float(v), 6)
         else:
@@ -207,7 +213,8 @@ def _median_views(entries):
 def _split(entries, since):
     """(confirmed, false alarms) among the log entries newer than `since`. Confirmed: cut, edited or posted, got
     views at or above the creator's middle views, or came from a burst of viewers' clips. False alarms: sent to the
-    AI and nothing else happened. Confirmed ones are (why, entry)."""
+    AI and nothing else happened. A moment the judges clipped is neither: nobody has used it yet, but it was not a
+    false alarm either. Confirmed ones are (why, entry)."""
     med = _median_views(list(entries.values()))
     yes, no = [], []
     for e in sorted((e for e in entries.values() if (e.get("t") or 0) > since), key=lambda e: e.get("t") or 0):
@@ -217,7 +224,7 @@ def _split(entries, since):
                "viewers clipped" if (v.get("viewer_clips") or 0) > 0 or e.get("kind") == "viewers" else None)
         if why:
             yes.append((why, e))
-        elif e.get("sent"):
+        elif e.get("sent") and not str(e.get("result") or "").startswith("Clipped"):
             no.append(e)
     return yes, no
 
@@ -237,7 +244,7 @@ def _words_for(job_id):
 def _facts(e, words):
     """Numbers and short labels of a log entry, and the creator's own words around it. Never chat text."""
     parts = []
-    names = {"loud": "loudness z", "chat": "chat z", "convergence": "chat agreeing", "reactions": "reaction types in chat",
+    names = {"loud": "loudness z", "chat": "chat z", "convergence": "chat agreeing", "reactions": "share of chat reacting",
              "viewer_clips": "viewers' clips"}
     for k, n in names.items():
         x = (e.get("values") or {}).get(k)
@@ -319,4 +326,7 @@ def learn(cid) -> bool:
     if not body or not creators.get(cid):
         return False
     text = trim(f"Updated {_today()}\n{body}")
-    return save(cid, text, expect=old_text, last_update=newest)
+    if not save(cid, text, expect=old_text, last_update=newest):
+        return False
+    ctx.bump()          # the Setup page shows the new profile
+    return True

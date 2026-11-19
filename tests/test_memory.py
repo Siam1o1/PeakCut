@@ -196,5 +196,46 @@ check("DELETE resets", (r.status_code, memory.load(cid)), (200, ("", {})))
 check("someone else's creator is not found", (c.get("/api/creators/nope/behavior").status_code, c.put("/api/creators/nope/behavior", json={"text": "a"}, headers=H).status_code,
       c.delete("/api/creators/nope/behavior", headers=H).status_code), (404, 404, 404))
 
+# ---- final review: the chat seed's units, what counts as a false alarm, the page is told
+memory.reset(cid); memory.save(cid, "x", {})
+memory.after_stream(session())
+check("the saved chat normal says its unit (people when the viewer count was not known)", memory.load(cid)[1]["chat"].get("unit"), "people")
+s4 = session(); s4.viewer_log = [(0, 2000)]
+memory.reset(cid); memory.save(cid, "x", {"chat": {"median": 50.0, "mad": 5.0, "unit": "people"}})
+memory.after_stream(s4)
+ch = memory.load(cid)[1]["chat"]
+check("a stream counted per 1,000 viewers replaces a normal counted in people, never mixed",
+      (ch["unit"], round(ch["median"], 3)), ("per1000", round(3 * 1000 / 2000, 3)))
+check("the seed carries the unit", memory.seed(cid)["chat"]["unit"], "per1000")
+def seeded(seed_chat, viewers=None):
+    se_ = live.Session({"title": "t", "uploader": "u", "dir": tempfile.mkdtemp(), "creator": "", "ai": {}, "clips": [], "points": [],
+                        "source": {"url": "", "name": "t"}}, dict(creators.DEFAULTS))
+    se_.seed = {"chat": seed_chat}
+    se_.chat_on = True
+    se_.chat_users = {t: {f"q{t}_{i}" for i in range(8 if t >= 25 else 1)} for t in range(30)}
+    if viewers:
+        se_.viewer_log = [(0, viewers)]
+    return se_._chat_z(29)
+check("the seed is used when it is in the same units", seeded({"median": 1.0, "mad": 0.5, "unit": "people"}) > 3.5, True)
+check("a seed in other units is not used", seeded({"median": 1.0, "mad": 0.5, "unit": "per1000"}), 0.0)
+check("a seed saved before units were kept is not used", seeded({"median": 1.0, "mad": 0.5}), 0.0)
+check("per 1,000 viewers on both sides: used", seeded({"median": 1.0, "mad": 0.5, "unit": "per1000"}, viewers=1000) > 3.5, True)
+logc = signals.log_for(cid)
+cl = logc.add({"job": JID, "t": 10 ** 10, "at": 5, "values": {}, "score": 60, "sent": True})
+logc.update(cl, result="Clipped: both judges agreed")
+fa = logc.add({"job": JID, "t": 10 ** 10, "at": 9, "values": {}, "score": 60, "sent": True})
+logc.update(fa, result="Words judge: nothing clip-worthy")
+yes, no = memory._split(logc.read(), 10 ** 10 - 1)
+check("a moment the judges clipped is not a false alarm (nor confirmed)", ([e["id"] for e in no], [e["id"] for _w, e in yes]), ([fa], []))
+memory.reset(cid); memory.save(cid, "Old.", {})
+lb = signals.log_for(cid); bb = lb.add({"job": JID, "t": 10 ** 11, "at": 1, "values": {}, "score": 1, "sent": True}); lb.update(bb, downloaded=True)
+v0 = ctx.version()
+brain.ask_ai = fake
+try:
+    learned = memory.learn(cid)
+finally:
+    brain.ask_ai = real
+check("a saved profile tells the page to refresh", (learned, ctx.version() > v0), (True, True))
+
 print("\nFAILED: " + ", ".join(fails) if fails else "\nALL PASS")
 sys.exit(1 if fails else 0)

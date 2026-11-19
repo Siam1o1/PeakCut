@@ -50,20 +50,24 @@ def per_viewer(count, viewers):
 
 class HourlyTop:
     """Keeps the strongest N candidates of any rolling hour. A new one goes if there is room, or if it is stronger
-    than the weakest one sent in the last hour (which is then dropped from the count)."""
+    than the weakest one sent in the last hour (which is then dropped from the count). The candidate dropped that way
+    is kept in `dropped` (its log id, or None), so the log can say it was replaced."""
 
     def __init__(self, n):
         self.n = max(1, int(n))
-        self.sent = []          # (time, score)
+        self.sent = []          # (time, score, candidate id)
+        self.dropped = None
 
-    def admit(self, score, now) -> bool:
-        self.sent = [(t, s) for t, s in self.sent if now - t < 3600]
+    def admit(self, score, now, cand=None) -> bool:
+        self.dropped = None
+        self.sent = [x for x in self.sent if now - x[0] < 3600]
         if len(self.sent) < self.n:
-            self.sent.append((now, score))
+            self.sent.append((now, score, cand))
             return True
         weakest = min(range(len(self.sent)), key=lambda i: self.sent[i][1])
         if score > self.sent[weakest][1]:
-            self.sent[weakest] = (now, score)
+            self.dropped = self.sent[weakest][2]
+            self.sent[weakest] = (now, score, cand)
             return True
         return False
 
@@ -147,10 +151,16 @@ def _words(text):
     return out
 
 
+REACTING = ("laugh", "shock", "hype")      # the reaction types that count as chat reacting to something
+
+
 def analyze_window(msgs, words=None):
-    """What a stretch of chat says, counted in people: how many talked, the share who sent the most common word
-    (convergence), how many people each reaction type covers, and how many asked for a clip. Bots are left out,
-    and so is a long message that was sent more than once by fewer than three people (copy and paste)."""
+    """What a stretch of chat says, counted in people: how many talked, the word or phrase from the creator's word
+    lists that the most people sent (`top`, with its type in `top_kind`) and the share of people who sent it
+    (`convergence`), how many people each reaction type covers, how many people used a laugh, shock or hype word
+    (`reacting`), and how many asked for a clip. Only words from the lists can be the top word: an everyday word
+    like "the" never is, and no other chat text is ever shown. Bots are left out, and so is a long message that was
+    sent more than once by fewer than three people (copy and paste)."""
     words = words or DEFAULT_WORDS
     long_by = {}
     for user, text in msgs:
@@ -165,26 +175,30 @@ def analyze_window(msgs, words=None):
             continue
         people.setdefault(u, []).append(" ".join(_words(t)))
     out = {"people": len(people), "convergence": 0.0, "top": "", "top_kind": "",
-           "types": {k: 0 for k in words}, "clip_people": 0}
+           "types": {k: 0 for k in words}, "clip_people": 0, "reacting": 0}
     if not people:
         return out
     phrases = {kind: [" " + " ".join(_words(p)) + " " for p in lst if _words(p)] for kind, lst in words.items()}
-    seen = {}
+    order = []                                   # each list phrase once, with the first type it is listed under
+    for kind, lst in phrases.items():
+        for p in lst:
+            if p not in (q for q, _k in order):
+                order.append((p, kind))
+    said = {p: 0 for p, _k in order}
     for u, texts in people.items():
-        toks = set(w for t in texts for w in t.split())
-        for w in toks:
-            seen[w] = seen.get(w, 0) + 1
-        for kind, lst in phrases.items():        # a phrase has to sit inside one message
-            if any(p in " " + t + " " for t in texts for p in lst):
-                out["types"][kind] += 1
+        padded = [" " + t + " " for t in texts]
+        used = {p for p, _k in order if any(p in t for t in padded)}    # a phrase has to sit inside one message
+        for p in used:
+            said[p] += 1
+        kinds = {k for k, lst in phrases.items() if any(p in used for p in lst)}
+        for kind in kinds:
+            out["types"][kind] += 1
+        if kinds & set(REACTING):
+            out["reacting"] += 1
     out["clip_people"] = out["types"].get("clip", 0)
-    if not seen:
-        return out
-    top = max(seen, key=seen.get)
-    own = [k for k, lst in phrases.items() if " " + top + " " in lst and out["types"][k]]
-    common = max(out["types"], key=out["types"].get)
-    out.update(top=top, convergence=seen[top] / len(people),
-               top_kind=(max(own, key=out["types"].get) if own else (common if out["types"][common] else "")))
+    best = max(order, key=lambda pk: said[pk[0]], default=None)    # the first listed wins a tie
+    if best and said[best[0]]:
+        out.update(top=best[0].strip(), top_kind=best[1], convergence=said[best[0]] / len(people))
     return out
 
 
@@ -252,12 +266,12 @@ def rating(sub):
 
 # ---------------------------------------------------------------- one score
 DEFAULT_WEIGHTS = {"loud": 1.0, "chat": 1.0, "convergence": 1.0, "reactions": 0.5, "clip_requests": 1.0, "viewer_clips": 2.0}
-_SCALE = {"loud": 6.0, "chat": 6.0, "convergence": 1.0, "reactions": 5.0, "clip_requests": 3.0, "viewer_clips": 3.0}
+_SCALE = {"loud": 6.0, "chat": 6.0, "convergence": 1.0, "reactions": 1.0, "clip_requests": 3.0, "viewer_clips": 3.0}
 
 
 def fuse(values, weights=None) -> int:
     """All the signs a moment has, as one number from 0 to 100. Each sign is first scaled to 0..1 (a z-score of 6 or
-    more is full, five people with a reaction, three asking for a clip, three viewer clips). Then they are combined so
+    more is full, everyone in chat agreeing or reacting, three asking for a clip, three viewer clips). Then they are combined so
     that ONE strong sign is enough and several weaker ones add up: the chance that nothing is going on is the
     product of each sign's "nothing here" share, and the creator's weights say how far each sign is trusted (the
     heaviest weight counts fully, a lighter one counts for its share of it). A weight of 0 leaves a sign out. A sign

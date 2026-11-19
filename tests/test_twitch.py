@@ -182,4 +182,29 @@ sn = live_session(); sn._helix = twitch.Helix("cid", "sec", get=get, post=post)
 msgs.clear(); sn._poll_viewer_clips()
 check("no clips is not an error", msgs, [])
 check("no secret in the log", all("sec" not in m and "cid" not in m for m in msgs + ["x"]), True)
+# one Helix (and one token) for every recording in this process
+import threading
+check("the same credentials give the same Helix", twitch.shared("id1", "s1") is twitch.shared("id1", "s1"), True)
+check("other credentials give another one", twitch.shared("id2", "s1") is twitch.shared("id1", "s1"), False)
+hsh = twitch.shared("id1", "s1"); hsh.get, hsh.post = get, post
+calls["post"] = 0
+real_app = config.twitch_app
+config.twitch_app = lambda: ("id1", "s1")
+try:
+    r1, r2 = live_session(), live_session()
+    CLIPS[:] = []
+    r1._poll_viewer_clips(); r2._poll_viewer_clips()
+finally:
+    config.twitch_app = real_app
+check("two recordings share one Helix and fetch the token once", (r1._helix is r2._helix, calls["post"]), (True, 1))
+# whether the last clips call worked is per recording (each polls on its own thread)
+hok = twitch.Helix("cid", "sec", get=get_clips_fail, post=post)
+seen_ok = {}
+def poll_fail():
+    hok.clips("42", 0); seen_ok["fail"] = hok.ok
+th = threading.Thread(target=poll_fail); th.start(); th.join()
+hok.get = get
+hok.clips("42", 0)
+check("a failing call on one thread does not mark another thread's call as failed", (seen_ok["fail"], hok.ok), (False, True))
+
 print("FAILED: " + ", ".join(fails) if fails else "ALL PASS"); sys.exit(1 if fails else 0)

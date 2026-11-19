@@ -25,7 +25,12 @@ check("viewers unknown: the count itself", signals.per_viewer(5, None), 5.0)
 top = signals.HourlyTop(2)
 check("the first N in an hour go", (top.admit(50, 0), top.admit(40, 10)), (True, True))
 check("a weaker one when the hour is full does not", top.admit(30, 20), False)
-check("a stronger one replaces the weakest", (top.admit(60, 30), sorted(s for _, s in top.sent)), (True, [50, 60]))
+check("a stronger one replaces the weakest", (top.admit(60, 30), sorted(s for _, s, _c in top.sent)), (True, [50, 60]))
+top = signals.HourlyTop(1)
+top.admit(10, 0, "c-weak")
+check("nothing is dropped while there is room", top.dropped, None)
+check("the replaced candidate's id is kept", (top.admit(20, 5, "c-strong"), top.dropped), (True, "c-weak"))
+check("a refused one drops nothing", (top.admit(1, 6, "c-low"), top.dropped), (False, None))
 check("an hour later there is room again", top.admit(10, 3700), True)
 
 # ---- settings
@@ -73,14 +78,7 @@ se = session(sig_baseline=False)
 se.db = [-30.0 + (i % 2) * 0.1 for i in range(200)] + [-29.5] * 5
 se._watch_spikes()
 check("old rule: a small rise on a quiet stream does not", se.spike, None)
-# a chat spike for the clip judge
-se = session(); se.samples = 16000 * 905
-se.chat_on = True; se.chat_total = 500
-se.chat_users = {t: {f"p{t}"} for t in range(0, 905, 2)}
-for t in range(890, 905): se.chat_users[t] = {f"x{t}_{i}" for i in range(8)}
-check("_chat_spike uses the baseline", se._chat_spike(890, 898), True)
-se2 = session(); se2.samples = 16000 * 905
-check("_chat_spike without chat is False", se2._chat_spike(890, 898), False)
+check("the old chat check is gone", hasattr(live.Session, "_chat_spike"), False)
 se = session(live_per_hour=1)
 check("the strongest-N rule is built from live_per_hour", se.top.n, 1)
 
@@ -140,12 +138,6 @@ se.top.admit(9.0, _time.time())
 se._ai_check((0.0, 40.0), "Jump: loudness z 4.0", 4.0)
 check("pick mode: a second, weaker jump in the hour is passed over", se.verdicts[-1]["result"], "Passed over: stronger moments this hour")
 
-# a burst inside s..e that has faded by e+2 still counts
-se = session(); se.samples = 1005 * 16000; fill_chat(se, 0.8, 1005, seed=5)
-for t in range(1000, 1005): se.chat_users.pop(t, None)
-se.chat_users.update({t: {f"f{t}_{i}" for i in range(8)} for t in range(990, 997)})
-check("a burst inside s..e that faded by e+2 still counts", se._chat_spike(990, 996), True)
-check("...and quiet chat over the same stretch does not", session()._chat_spike(990, 996), False)
 # a count that goes missing after being known does not change the units
 se = session(); fill_chat(se, 0.8, 1005, burst=6); se.samples = 1005 * 16000
 se.viewer_log = [(0, 2000)]; se.viewers = 2000
@@ -210,13 +202,17 @@ check("other notices are ignored", se.raid_until, 80)
 
 def talk(se, second, n, text="KEKW"):
     se.chat_msgs[second] = [(f"p{second}_{i}", text) for i in range(n)]
-cw = session(); cw.db = calm_db[:100]
+def calm_hist(se, until=92, level=0.1):
+    """Ten calm readings before `until`: chat agreement is judged against this stream's own normal."""
+    se.conv_hist = [(until - 8 * (10 - i), level) for i in range(10)]
+cw = session(); cw.db = calm_db[:100]; calm_hist(cw)
 for s_ in range(92, 100): talk(cw, s_, 1)
 r = cw.chat_window(92, 99)
 check("chat_window analyses that stretch", (r["people"], r["top"]), (8, "kekw"))
 check("a stretch with nothing in it is empty", cw.chat_window(10, 20)["people"], 0)
 cw._watch_spikes()
 check("a crowd saying one word is a spike", bool(cw.spike) and "KEKW" in cw.spike["why"] and "laugh" in cw.spike["why"], True)
+check("the spike text says how many people and how they felt", cw.spike["why"], "Chat: 8 people laughing (KEKW)")
 check("the spike keeps the window numbers", cw.spike["chat"]["people"], 8)
 check("the card shows the latest convergence", cw.base.get("conv"), 1.0)
 cw = session(sig_chat_words=False); cw.db = calm_db[:100]
@@ -251,11 +247,11 @@ for label, txt in (("a lone question mark", "?"), ("emoji only", "😂😂"), ("
         ok = False
     check(f"{label} does not crash the analysis", ok, True)
 check("nothing readable gives no convergence", signals.analyze_window([(f"u{i}", "?") for i in range(5)])["convergence"], 0.0)
-r = signals.analyze_window([(f"u{i}", "😂😂 😂") for i in range(5)])
+r = signals.analyze_window([(f"u{i}", "😂😂 😂") for i in range(5)], {"laugh": ["😂"]})
 check("emoji are words: top 😂, everyone sent it", (r["top"], r["convergence"]), ("😂", 1.0))
 check("a custom list with emoji and Korean matches",
       signals.analyze_window([("a", "ㅋㅋ"), ("b", "😂"), ("c", "hi")], {"laugh": ["ㅋㅋ", "😂"]})["types"]["laugh"], 2)
-check("non-Latin words converge", signals.analyze_window([(f"u{i}", "Привет!") for i in range(4)])["top"], "привет")
+check("non-Latin words converge", signals.analyze_window([(f"u{i}", "Привет!") for i in range(4)], {"hype": ["привет"]})["top"], "привет")
 check("a phrase with an apostrophe matches in any case",
       signals.analyze_window([("a", "LET'S GO!!")], {"hype": ["let's go"]})["types"]["hype"], 1)
 check("an emote like D: still matches", signals.analyze_window([("a", "D:")], {"shock": ["d:"]})["types"]["shock"], 1)
@@ -268,7 +264,7 @@ check("the same long text twice by one person is dropped", signals.analyze_windo
 w = signals.analyze_window([(f"u{i}", "KEKW") for i in range(4)] + [("u5", "wtf"), ("u6", "wtf")])
 check("the kind shown is the top word's own type", w["top_kind"], "laugh")
 w = signals.analyze_window([(f"u{i}", "ok") for i in range(4)] + [("u5", "lol"), ("u6", "lol")])
-check("a top word with no type shows the most common type", w["top_kind"], "laugh")
+check("a word that is not in a list is never the top word", (w["top"], w["top_kind"], round(w["convergence"], 2)), ("lol", "laugh", round(2 / 6, 2)))
 tm = signals.parse_irc("@user-id=3 :bob!bob@bob.tmi.twitch.tv PRIVMSG #x :did you see USERNOTICE  : that")
 check("a message that mentions USERNOTICE stays a message", tm["kind"], "msg")
 check("a notice is told from the command position", signals.parse_irc(":tmi.twitch.tv USERNOTICE #x")["kind"], "notice")
@@ -280,7 +276,7 @@ se.samples = 140 * 16000
 se.take_chat_line(chat_line(1, "KEKW"))
 check("after a raid chatters count again", len(se.chat_users[140]), 1)
 # the word shown in why is capped
-cw = session(); cw.db = calm_db[:100]
+cw = session(words_laugh="x" * 80); cw.db = calm_db[:100]; calm_hist(cw)
 for s_ in range(92, 100): cw.chat_msgs[s_] = [(f"p{s_}_{i}", "x" * 80) for i in range(1)]
 cw._watch_spikes()
 check("a very long word is cut in the spike text", bool(cw.spike) and len(cw.spike["why"]) < 80, True)
@@ -331,7 +327,7 @@ sh.chat_users = {t: {f"p{t}"} for t in range(0, 905, 2)}
 for t in range(900, 905): sh.chat_users[t] = {f"x{t}_{i}" for i in range(8)}
 sh._watch_spikes()
 check("timing off: no shift", sh.spike and sh.spike["t"], 902)
-sh = session(); sh.lag = 6; sh.db = calm_db[:100]
+sh = session(); sh.lag = 6; sh.db = calm_db[:100]; calm_hist(sh)
 for s_ in range(92, 100): talk(sh, s_, 1)
 sh._watch_spikes()
 check("a chat-words spike is shifted back too", sh.spike and sh.spike["t"], 97 - 6)
@@ -480,12 +476,12 @@ check("the judges' verdict is added", (r2["sent"], r2["words"], r2["reaction"]),
 lx._verdict({"t": 1, "cand": cand}, "AI error: " + "e" * 80)
 check("an error is logged as a fixed label, never its text", lx.log.read()[cand]["result"], "ai error")
 chatsp = {"t": 50.0, "why": "Chat", "z": 5.0, "chat": {"people": 9, "convergence": 0.7, "top": "x" * 60, "top_kind": "hype",
-          "types": {"laugh": 1, "shock": 1, "hype": 2, "clip": 4, "negative": 3}, "clip_people": 4}}
+          "types": {"laugh": 1, "shock": 1, "hype": 2, "clip": 4, "negative": 3}, "clip_people": 4, "reacting": 3}}
 cc = lx._candidate(chatsp)
 rc = lx.log.read()[cc]
 check("chat window numbers are logged, never the word", (rc["values"]["convergence"], rc["values"]["clip_requests"], "x" * 60 in open(lx.log.path, encoding="utf-8").read()), (0.7, 4, False))
 check("the kind label is short", rc.get("kind"), "hype")
-check("reactions count laugh, shock and hype only (not negative, not clip)", rc["values"]["reactions"], 4)
+check("reactions are the share of the window's people who reacted", rc["values"]["reactions"], round(3 / 9, 2))
 lw = logged(sig_weights={"loud": 0, "chat": 0, "convergence": 0, "reactions": 0, "clip_requests": 0, "viewer_clips": 1})
 vsp = {"t": 5.0, "why": "v", "z": 13, "viewer_clips": 3}
 wc = lw._candidate(vsp)
@@ -569,5 +565,99 @@ with patched(live.jobs, "save", lambda j: None):
     pk = session(); pk.pick = True; pk.job["points"] = []
     pnt = picks.add_point(pk, {"start": 80.0, "end": 110.0, "peak": 100.0, "score": 70, "reason": "r", "rating": {"hook": 7, "value": 70}})
 check("a point keeps the rating", pnt["rating"], {"hook": 7, "value": 70})
+
+# ---- final review: chat must beat its own normal
+# Only words from the creator's lists can be the top word, and "the" never is.
+w = signals.analyze_window([(f"u{i}", "the the") for i in range(9)])
+check("'the' from everyone is not a top word", (w["top"], w["convergence"]), ("", 0.0))
+w = signals.analyze_window([(f"u{i}", "the game lol") for i in range(3)] + [(f"v{i}", "the end") for i in range(6)])
+check("the top word is the list word, not the more common 'the'", (w["top"], w["top_kind"], round(w["convergence"], 2)), ("lol", "laugh", 0.33))
+w = signals.analyze_window([("a", "KEKW"), ("b", "wtf"), ("c", "clip it"), ("d", "L"), ("e", "KEKW wtf")])
+check("reacting counts people with a laugh, shock or hype word, once each", w["reacting"], 3)
+check("a phrase from a list can be the top word", signals.analyze_window([(f"u{i}", "NO WAY") for i in range(4)])["top"], "no way")
+
+# A stream of ordinary chat (common words, Zipf-like) never makes a chat-words jump; a real burst does.
+ZW = ["lol", "the", "i", "kekw", "a", "is", "lul", "you", "that", "what", "omegalul", "w", "gg", "this", "he", "it",
+      "pog", "no", "so", "bro"] + [f"w{i}" for i in range(1500)]
+zp = 1.0 / np.arange(1, len(ZW) + 1); zp /= zp.sum()
+zr = np.random.default_rng(7)
+def zipf_second(se, sec, rate=2.0):
+    se.chat_msgs[sec] = [(f"u{int(zr.integers(0, 300))}", " ".join(zr.choice(ZW, int(zr.integers(1, 7)), p=zp)))
+                         for _ in range(int(zr.poisson(rate)))]
+zs_ = session(); zs_.db = [-30.0] * 2000
+jumps = []
+for sec in range(1, 1500):
+    zipf_second(zs_, sec - 1)
+    zs_._watch_chat_words(sec)
+    if zs_.spike:
+        jumps.append(zs_.spike["why"]); zs_.spike = None; zs_.last_spike = -999
+    for t in [t for t in zs_.chat_msgs if t < sec - 130]:
+        del zs_.chat_msgs[t]
+check("25 minutes of ordinary Zipf-like chat make no chat-words jump", jumps, [])
+check("...and every window was read", len(zs_.conv_hist) > 100, True)
+# a real burst: 8 people sending KEKW against a calm chat
+kb = session(); kb.db = [-30.0] * 400
+for sec in range(0, 300):
+    kb.chat_msgs[sec] = [(f"c{sec}", f"w{sec} hello there")]
+    kb.chat_msgs = {t: m for t, m in kb.chat_msgs.items() if t >= sec - 120}
+    kb._watch_chat_words(sec + 1)
+check("calm chat alone makes no jump", kb.spike, None)
+for i, sec in enumerate(range(300, 308)):
+    kb.chat_msgs[sec] = [(f"k{i}", "KEKW"), (f"c{sec}", "hello")]
+kb._watch_chat_words(308)
+check("8 people sending KEKW against calm chat is a jump", bool(kb.spike) and kb.spike["why"], "Chat: 8 people laughing (KEKW)")
+# the same crowd with no history yet is not judged
+nh = session(); nh.db = [-30.0] * 100
+for s_ in range(92, 100): talk(nh, s_, 1)
+nh._watch_spikes()
+check("without enough readings to know this chat's normal, no chat-words jump", nh.spike, None)
+# clip requests from 3 people still count on their own, even in a chat that always asks for clips
+cr = session(); cr.db = [-30.0] * 100
+cr.conv_hist = [(12 + 8 * i, 1.0) for i in range(10)]
+for s_ in range(92, 95): cr.chat_msgs[s_] = [(f"c{s_}", "clip it")]
+cr._watch_spikes()
+check("three people asking for a clip is a jump on its own", bool(cr.spike) and "clip" in cr.spike["why"], True)
+# the reactions signal is a share, so a full crowd of laughs is 1, not people / 5
+rs = logged()
+rsc = rs._candidate({"t": 50.0, "why": "Chat", "z": 5.0, "chat": {"people": 20, "convergence": 0.5, "top": "kekw",
+                     "top_kind": "laugh", "types": {"laugh": 10}, "clip_people": 0, "reacting": 10}})
+check("reactions: 10 of 20 people reacting is 0.5", rs.log.read()[rsc]["values"]["reactions"], 0.5)
+check("fuse: reactions are scaled as a share (half the people, weight 0.5 of 2)", signals.fuse({"reactions": 0.5}),
+      round(100 * (1 - 0.5 ** 0.25)))
+
+# ---- final review: clip caps, replaced candidates, a busy AI
+cap = session(live_per_hour=1)
+cap.job["clips"] = [{"score": 70, "made_at": _time.time()}]
+cap.words = [{"w": "word", "s": float(i), "e": i + 0.5} for i in range(40)]; cap.t_done = 40.0
+cap._ai_check((0.0, 40.0), "Jump: loudness z 9.0", 99.0)
+check("clip mode: a strong jump still respects the clips-per-hour cap", cap.verdicts[-1]["result"], "Skipped: 1 clips this hour already")
+check("...and takes no place among the hour's strongest", cap.top.sent, [])
+pc = session(live_per_hour=1); pc.pick = True; pc.job["mode"] = "pick"
+pc.job["points"] = [{"score": 70, "made_at": _time.time()}]
+pc.words = [{"w": "word", "s": float(i), "e": i + 0.5} for i in range(40)]; pc.t_done = 40.0
+with patched(live.brain, "judge_transcript", lambda *a, **k: ([], 0)):
+    pc._ai_check((0.0, 40.0), "Jump: loudness z 9.0", 99.0)
+check("pick mode: no clips-per-hour cap, only the strongest-N rule", (pc.verdicts[-1]["result"], len(pc.top.sent)),
+      ("Words judge: nothing clip-worthy", 1))
+rl2 = logged(live_per_hour=1)
+weak = rl2._candidate({"t": 10.0, "why": "x", "z": 4.0, "sig": {"loud": 4.0}})
+rl2.top.admit(10.0, _time.time(), weak)
+strong = rl2._candidate({"t": 90.0, "why": "x", "z": 9.0, "sig": {"loud": 9.0}})
+rl2.words = [{"w": "word", "s": float(i), "e": i + 0.5} for i in range(40)]; rl2.t_done = 40.0
+with patched(live.brain, "judge_transcript", lambda *a, **k: ([], 0)):
+    rl2._ai_check((0.0, 40.0), "Jump: loudness z 9.0", 80.0, cand=strong)
+check("a candidate pushed out of the hour's strongest is logged as replaced",
+      (rl2.log.read()[weak].get("replaced"), rl2.log.read()[strong].get("replaced")), (True, None))
+bz = session(); bz.ai_busy = _time.time()
+bz._ask_ai((0.0, 40.0), "Jump: Viewers clipped this (3 people)", 90, cand="cx", burst={"t": 50.0, "people": 3, "ids": ["a"]})
+check("clip mode: a viewer burst is put back in its queue while the AI is busy",
+      [(b["t"], b["people"], b["cand"]) for b in bz.viewer_queue], [(50.0, 3, "cx")])
+n0 = bz.spikes
+bz._flush_viewer_queue()
+check("...and comes back with the same candidate, not counted twice", (bz.spike and bz.spike.get("cand"), bz.spikes), ("cx", n0))
+check("its score is kept and no second log line is made", bz._candidate(bz.spike), "cx")
+bz2 = session(); bz2.ai_busy = _time.time()
+bz2._ask_ai((0.0, 40.0), "Jump: loudness z 5.0", 50, cand=None)
+check("any other jump is still dropped while the AI is busy", bz2.viewer_queue, [])
 
 print("ALL PASSED" if not fails else f"{len(fails)} failed"); sys.exit(1 if fails else 0)

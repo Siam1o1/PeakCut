@@ -89,7 +89,11 @@ folder is `creators.root(cid)`.
   Fossabot, plus any name ending in "bot"), `USERNOTICE` events (raids, subs, gift subs) and the few seconds of
   chat right after a raid, and copypasta: the same long message (more than 6 words) sent by fewer than 3 people.
 - Per window of 8 seconds (setting range 5 to 10):
-  - **convergence**: the share of unique chatters whose message contains the window's most common word or emote;
+  - **convergence**: the share of unique chatters whose message contains the window's most common word, emote or
+    phrase from the creator's word lists below (an everyday word like "the" never counts; amended after the final
+    review). A window is a chat-words candidate when at least 5 people talked, at least 3 sent that word, and its
+    convergence is unusual for this stream: robust z (floor 0.05) against the last 15 minutes of readings at or
+    above `jump_z`. Clip requests from 3 or more people are a candidate on their own;
   - **reaction type** counts per type: laugh, shock, hype, clip request, negative. Each type has an editable word
     list per creator (defaults in `signals.py`, e.g. laugh: LUL, KEKW, lol, lmao, haha, OMEGALUL; shock: WTF, omg,
     no way, what; hype: Pog, PogChamp, LETS GO, W; clip: clip, clip it, clip that; negative: L, cringe, boring);
@@ -127,7 +131,8 @@ folder is `creators.root(cid)`.
 - `signals.fuse(values, weights)` combines the signals into one score from 0 to 100: loudness z, chat z,
   convergence, reaction counts (laugh, shock and hype only), clip requests, viewer-clip burst. Weights per creator
   (setting `sig_weights`, a small dict with defaults), editable in Setup as numbers. Each signal is scaled to
-  v in 0..1 (z / 6, convergence as is, reactions / 5, clip requests / 3, viewer clips / 3), then combined as a
+  v in 0..1 (z / 6, convergence as is, reactions as the share of the window's people who used a laugh, shock or hype
+  word, clip requests / 3, viewer clips / 3), then combined as a
   weighted noisy-OR: `score = round(100 * (1 - prod((1 - v_i) ** (w_i / max_w))))` over signals with w_i > 0
   (all weights 0 gives 0). One full signal gives 100, even a lightly weighted one; a lightly weighted partial
   signal counts for less than a heavily weighted one; several partial ones add up.

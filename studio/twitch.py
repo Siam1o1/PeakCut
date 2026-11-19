@@ -2,6 +2,7 @@
 
 Only used to read clips of the channel being recorded, with a free app made at dev.twitch.tv. Every call has a
 15 second limit and any problem gives an empty answer: this never stops a recording."""
+import threading
 import time
 from datetime import datetime, timezone
 
@@ -25,31 +26,52 @@ def _rfc3339(unix):
 
 
 class Helix:
+    """Calls to Twitch with one app token, which is kept and renewed a little before it runs out. One of these is
+    shared by every recording (see `shared`), so several recordings do not each ask Twitch for a token."""
+
     def __init__(self, client_id, secret, get=httpx.get, post=httpx.post):
         self.client_id, self.secret, self.get, self.post = client_id, secret, get, post
         self.token, self.token_until = None, 0.0
-        self.ok = True              # whether the last clips call worked (an empty answer still counts as working)
+        self._lock = threading.Lock()
+        self._mine = threading.local()     # each recording asks from its own thread: its own "last call worked"
+
+    @property
+    def ok(self):
+        """Whether the last clips call made on this thread worked (an empty answer still counts as working)."""
+        return getattr(self._mine, "ok", True)
+
+    @ok.setter
+    def ok(self, value):
+        self._mine.ok = bool(value)
 
     def _token(self):
-        if self.token and time.time() < self.token_until:
+        with self._lock:
+            if self.token and time.time() < self.token_until:
+                return self.token
+            r = self.post(TOKEN_URL, data={"client_id": self.client_id, "client_secret": self.secret,
+                                           "grant_type": "client_credentials"}, timeout=TIMEOUT)
+            r.raise_for_status()
+            j = r.json()
+            self.token = j["access_token"]
+            self.token_until = time.time() + max(60, int(j.get("expires_in", 3600)) - 120)   # renewed a little early
             return self.token
-        r = self.post(TOKEN_URL, data={"client_id": self.client_id, "client_secret": self.secret,
-                                       "grant_type": "client_credentials"}, timeout=TIMEOUT)
-        r.raise_for_status()
-        j = r.json()
-        self.token = j["access_token"]
-        self.token_until = time.time() + max(60, int(j.get("expires_in", 3600)) - 120)   # renewed a little early
-        return self.token
+
+    def _forget(self, token):
+        """Twitch refused this token: the next call asks for a new one (unless another recording already did)."""
+        with self._lock:
+            if self.token == token:
+                self.token, self.token_until = None, 0.0
 
     def _call(self, path, params):
         """The answer (a dict), or None on any problem. A refused token (401) is renewed and tried once more.
         Nothing here is logged, so no secret can leak."""
         try:
             for again in (True, False):
-                headers = {"Client-Id": self.client_id, "Authorization": "Bearer " + self._token()}
+                token = self._token()
+                headers = {"Client-Id": self.client_id, "Authorization": "Bearer " + token}
                 r = self.get(f"{API}/{path}", params=params, headers=headers, timeout=TIMEOUT)
                 if r.status_code == 401 and again:
-                    self.token, self.token_until = None, 0.0
+                    self._forget(token)
                     continue
                 r.raise_for_status()
                 j = r.json()
@@ -86,6 +108,19 @@ class Helix:
                 break
             params = dict(params, after=cursor)
         return out
+
+
+_shared = {}
+_shared_lock = threading.Lock()
+
+
+def shared(client_id, secret):
+    """The one Helix of this process for these credentials, so its token is fetched once for every recording."""
+    with _shared_lock:
+        h = _shared.get((client_id, secret))
+        if h is None:
+            h = _shared[(client_id, secret)] = Helix(client_id, secret)
+        return h
 
 
 def clip_times(clips, clock0):

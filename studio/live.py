@@ -33,6 +33,11 @@ class NotLive(Exception):
     pass
 
 
+def chat_unit(viewers):
+    """The unit a chat series is counted in: per 1,000 viewers when the viewer count was known, else people."""
+    return "per1000" if viewers else "people"
+
+
 def _trim_names(users: dict, second: int, kept: int) -> int:
     """Drop the chat names older than CHAT_KEEP, and say when this was last done.
 
@@ -186,14 +191,20 @@ class Session:
         self.facecam_checked = False  # the look is made once, even when it finds nothing
         self.ai_busy = 0.0            # when the AI check now running was started, 0 when none is
 
-    def _ask_ai(self, window=None, why=None, score=None, peak=None, cand=None):
+    def _ask_ai(self, window=None, why=None, score=None, peak=None, cand=None, burst=None):
         """Ask the AI on its own thread, so a slow answer never stops the recording.
 
         While the AI thinks, the speech keeps being written and a "clip that" still works. One check
         runs at a time; if the running one is stuck far past its own timeout, a new one is let through.
+        A burst of viewers' clips (`burst`) is not dropped while a check runs: it goes back in its queue and
+        is sent once the AI is free.
         """
         now = time.time()
         if self.ai_busy and now - self.ai_busy < config.LIVE_AI_TIMEOUT + 60:
+            if burst is not None and not self.pick:
+                with self.lock:
+                    self.viewer_queue.insert(0, dict(burst, cand=cand, again=True))
+                return
             signals.note(self._log(), cand, sent=False, result="AI busy")
             return
 
@@ -302,7 +313,7 @@ class Session:
             app = config.twitch_app()
             if not app:
                 return False
-            self._helix = twitch.Helix(*app)
+            self._helix = twitch.shared(*app)
         m = re.match(r"^https?://(?:www\.)?twitch\.tv/([A-Za-z0-9_]+)", self.job["source"]["url"])
         if not m:
             return False
@@ -330,13 +341,16 @@ class Session:
 
     def _flush_viewer_queue(self):
         """Send a waiting burst to the AI once no other jump is waiting for its transcript."""
-        if self.viewer_queue:
-            with self.lock:
-                if not self.spike:
-                    b = self.viewer_queue.pop(0)
-                    self.spike = {"t": float(b["t"]), "why": f"Viewers clipped this ({b['people']} people)",
-                                  "z": 10 + b["people"], "viewer_clips": b["people"],
-                                  "sig": {"loud": self.zs["loud"], "chat": self.zs["chat"]}}
+        with self.lock:
+            if self.viewer_queue and not self.spike:
+                b = self.viewer_queue.pop(0)
+                self.spike = {"t": float(b["t"]), "why": f"Viewers clipped this ({b['people']} people)",
+                              "z": 10 + b["people"], "viewer_clips": b["people"],
+                              "sig": {"loud": self.zs["loud"], "chat": self.zs["chat"]},
+                              "burst": {"t": b["t"], "people": b["people"], "ids": b.get("ids", [])}}
+                if b.get("cand"):
+                    self.spike["cand"] = b["cand"]      # sent back while the AI was busy: the same log line
+                if not b.get("again"):
                     self.spikes += 1
 
     def _flush_viewer_points(self):
@@ -562,51 +576,46 @@ class Session:
             self.words_read += win
             self._read_chat_window(self.words_read, win)
 
+    CONV_FLOOR = 0.05        # the least spread of chat agreement a window is judged against
+    CONV_HISTORY = 10        # readings (about 80 seconds) needed before chat agreement can be called unusual
+    FEELING = {"laugh": "laughing", "shock": "shocked", "hype": "hyped", "clip": "asking for a clip",
+               "negative": "unimpressed"}
+
+    def conv_z(self, value, people=0):
+        """How unusual this much agreement in chat is for this stream: against every reading of the last 15
+        minutes. 0 until there are enough readings to know what is normal here. The spread it is divided by is at
+        least what chance alone gives for this many people (a share of a few people jumps about on its own)."""
+        hist = [c for _s, c in self.conv_hist]
+        if len(hist) < self.CONV_HISTORY:
+            return 0.0
+        floor = self.CONV_FLOOR
+        if people:
+            m = float(np.median(hist))
+            floor = max(floor, (m * (1 - m) / people) ** 0.5 / signals.MAD_TO_SD)
+        return signals.robust_z(hist, value, floor=floor)
+
     def _read_chat_window(self, end, win):
         w = self.chat_window(end - win, end - 1)
+        cz = self.conv_z(w["convergence"], w["people"])     # measured against the readings before this one
         self.conv_hist.append((end, w["convergence"]))
         while self.conv_hist and self.conv_hist[0][0] < end - 900:
             self.conv_hist.pop(0)
         jz = float(self.settings.get("jump_z", 3.5))
         why, strength = None, 0.0
+        said = round(w["convergence"] * w["people"])
         if w["clip_people"] >= 3:
             why, strength = f"Chat: {w['clip_people']} people asked for a clip", min(1.0, w["clip_people"] / 6)
-        elif w["people"] >= 5 and w["convergence"] >= 0.5 and w["top"]:
-            said = round(w["convergence"] * w["people"])
-            why = f"Chat: {said} people said {w['top'][:25].upper()}" + (f" ({w['top_kind']})" if w["top_kind"] else "")
+        elif w["people"] >= 5 and said >= 3 and w["top"] and cz >= jz:
+            # a crowd sending one of the creator's reaction words far more than this chat usually does
+            kind = w["top_kind"]
+            n = max(said, w["types"].get(kind, 0))
+            why = f"Chat: {n} people {self.FEELING.get(kind, 'said')} ({w['top'][:25].upper()})"
             strength = w["convergence"]
         if why and not self.spike and end - self.last_spike >= self.AUTO_GAP:
             self.spike = {"t": max(0.0, float(end - 3) - self._shift()), "why": why, "z": jz + 2 * strength, "chat": w,
                           "sig": {"loud": self.zs["loud"], "chat": self.zs["chat"]}}
             self.last_spike = end
             self.spikes += 1
-
-    def _chat_spike(self, s, e):
-        """True if chat was clearly busier than usual during (and just after) these seconds: the busiest five seconds anywhere in s to
-        e+6, against the 15 minutes before them (the old rule: at least 3x busier than the stream's average).
-
-        The crowd is counted as people, not messages: ten people saying "GG" is a reaction, one
-        person saying "GG" ten times is a bot."""
-        elapsed = self.samples / SR
-        if self._baseline():
-            # every five-second stretch inside s..e+6 is judged against the 15 minutes before it: the best one counts,
-            # so a burst that had faded by the end of the stretch is still seen
-            last = int(e) + 6
-            best = max(self._chat_z(t) for t in range(min(int(s) + 4, last), last + 1))
-            return best >= float(self.settings.get("jump_z", 3.5))
-        if not self.chat_total or elapsed < 60:
-            return False
-        avg = self.chat_total / elapsed
-        a, b = int(s), int(e) + 6
-        rate = sum(self.chat.get(t, 0) for t in range(a, b + 1)) / (b - a + 1)
-        if rate <= max(3 * avg, 1.0):
-            return False
-        people = self.chat_people()
-        if not people:
-            return True
-        p_avg = sum(len(v) for v in people.values()) / max(1, len(people))
-        p_rate = sum(len(people.get(t, ())) for t in range(a, b + 1)) / (b - a + 1)
-        return p_rate >= max(2.0, 1.5 * p_avg)
 
     def _chat_series(self, end, length):
         """(the series, the viewer count its last second was scaled by). Different people talking in each second up to `end`, per 1,000 viewers when the viewer count is known.
@@ -637,7 +646,10 @@ class Session:
         if sum(series[-now_len:]) / now_len < signals.per_viewer(1.5, v):
             return 0.0
         floor = signals.per_viewer(self.CHAT_FLOOR, v)   # half a chatter a second: below that is just quiet
-        return min(signals.series_z(series, now_len=now_len, exclude=now_len + 5, seed=self.seed.get("chat"), floor=floor), self.Z_CAP)
+        seed = self.seed.get("chat")
+        if seed and seed.get("unit") != chat_unit(v):     # saved per 1,000 viewers but counted raw now, or the other way
+            seed = None
+        return min(signals.series_z(series, now_len=now_len, exclude=now_len + 5, seed=seed, floor=floor), self.Z_CAP)
 
     def chat_people(self):
         """Second -> how many different people were talking, where that is known.
@@ -831,13 +843,16 @@ class Session:
             self.skipped += 1
             return self._verdict(verdict, "Skipped: nobody talking")
         strongest = self._baseline() and not must and (trigger or "").startswith("Jump") and score is not None
-        if strongest:    # the strongest few moments of the hour are kept, whatever order they came in
-            if not self.top.admit(float(score), time.time()):
-                self.skipped += 1
-                return self._verdict(verdict, "Passed over: stronger moments this hour")
-        elif len(recent) >= st["live_per_hour"] and not must and not self.pick:
+        if len(recent) >= st["live_per_hour"] and not must and not self.pick:
+            # clip mode: never more clips in an hour than the creator allows, however strong the moment
             self.skipped += 1
             return self._verdict(verdict, f"Skipped: {st['live_per_hour']} clips this hour already")
+        if strongest:    # the strongest few moments of the hour are kept, whatever order they came in
+            if not self.top.admit(float(score), time.time(), cand):
+                self.skipped += 1
+                return self._verdict(verdict, "Passed over: stronger moments this hour")
+            if self.top.dropped:        # the weakest one sent this hour no longer counts: the log says so
+                signals.note(self._log(), self.top.dropped, replaced=True)
         usage.set_context(self.job["creator"], self.job["title"] or "Live stream")
         title, up = self.job["title"], self.job["uploader"]
         try:
@@ -967,10 +982,12 @@ class Session:
         w = sp.get("chat")
         if w:
             v.update(convergence=w["convergence"], clip_requests=w["clip_people"],
-                     reactions=min(w["people"], sum(w["types"].get(k, 0) for k in ("laugh", "shock", "hype"))))
+                     reactions=(w.get("reacting", 0) / w["people"]) if w.get("people") else 0.0)
         fused = signals.fuse(v, self.settings.get("sig_weights"))
         sp["score"] = fused
         kind = "viewers" if v["viewer_clips"] else (w.get("top_kind") or "chat") if w else ("loud" if v["loud"] >= v["chat"] else "chat")
+        if sp.get("cand"):         # already logged (a viewer burst that waited for a busy AI)
+            return sp["cand"]
         log = self._log()
         if log is None:
             return None
@@ -1185,9 +1202,11 @@ class Session:
                     cand = self._candidate(sp)
                     if self._timing():
                         a, b = self._edges(sp["t"])
-                        self._ask_ai((a - 10, b + 5), "Jump: " + sp["why"], sp["score"], peak=sp["t"], cand=cand)
+                        self._ask_ai((a - 10, b + 5), "Jump: " + sp["why"], sp["score"], peak=sp["t"], cand=cand,
+                                     burst=sp.get("burst"))
                     else:
-                        self._ask_ai((sp["t"] - self.AUTO_BEFORE, sp["t"] + self.AUTO_AFTER), "Jump: " + sp["why"], sp["score"], cand=cand)
+                        self._ask_ai((sp["t"] - self.AUTO_BEFORE, sp["t"] + self.AUTO_AFTER), "Jump: " + sp["why"], sp["score"],
+                                     cand=cand, burst=sp.get("burst"))
                 elif self.t_done - self.last_check >= every * 60 or (self.ended and not busy and self.t_done > self.last_check):
                     self._ask_ai()
                 self._publish()
