@@ -1,6 +1,7 @@
 """The maths behind finding moments in a live stream. Nothing here reads files or the network, so every part can be
 tested on its own. live.py feeds it what it hears and sees; it answers with numbers."""
 import re
+import unicodedata
 
 import numpy as np
 
@@ -83,57 +84,101 @@ def is_bot(name):
 
 def parse_irc(line):
     """Read one Twitch chat line. A message gives the person (their id when Twitch sends tags, otherwise their
-    nickname) and the text; a USERNOTICE (raid, sub, gift) gives only what kind it is. Anything else is None."""
+    nickname) and the text; a USERNOTICE (raid, sub, gift) gives only what kind it is. Anything else is None.
+    What kind of line it is comes from the command word right after the sender, never from the text."""
     tags = {}
     m = _TAGS.match(line)
     if m:
         tags = dict(kv.split("=", 1) if "=" in kv else (kv, "") for kv in m.group(1).split(";"))
         line = line[m.end():]
-    if " USERNOTICE " in line:
+    prefix = ""
+    if line.startswith(":"):
+        prefix, _, line = line.partition(" ")
+    command, _, params = line.partition(" ")
+    if command == "USERNOTICE":
         return {"kind": "notice", "user": tags.get("user-id", ""), "text": "", "notice": tags.get("msg-id", "")}
-    if " PRIVMSG #" not in line:
+    if command != "PRIVMSG" or not params.startswith("#"):
         return None
-    nick = _NICK.search(line)
+    nick = _NICK.search(prefix)
     name = tags.get("display-name") or (nick.group(1) if nick else "")
-    after = line.split(" PRIVMSG #", 1)[1]
-    text = after.split(" :", 1)[1] if " :" in after else ""
+    text = params.partition(" :")[2]
     return {"kind": "msg", "user": tags.get("user-id") or (nick.group(1).lower() if nick else ""), "name": name,
             "text": text.strip(), "notice": ""}
 
 
+def _is_emoji(ch):
+    return unicodedata.category(ch) == "So"
+
+
 def _words(text):
-    return re.findall(r"[a-z0-9:]+", text.lower())
+    """The words of a message, the same way for every language: split on spaces, trim punctuation around each
+    word (keeping apostrophes inside it and emotes like D:), and make each emoji a word of its own."""
+    out = []
+    for piece in text.casefold().replace("’", "'").split():
+        run = ""
+        parts = []
+        for ch in piece:
+            if _is_emoji(ch):
+                parts.append(run)
+                parts.append(ch)
+                run = ""
+            elif unicodedata.category(ch) in ("Mn", "Cf", "Me"):   # emoji joiners and variation marks
+                continue
+            else:
+                run += ch
+        parts.append(run)
+        for part in parts:
+            if len(part) == 1 and _is_emoji(part):
+                out.append(part)
+                continue
+            core = part
+            while core and unicodedata.category(core[0]).startswith("P"):
+                core = core[1:]
+            while core and unicodedata.category(core[-1]).startswith("P"):
+                core = core[:-1]
+            if core:
+                out.append(core + (":" if part.endswith(":") and len(core) == 1 else ""))
+    return out
 
 
 def analyze_window(msgs, words=None):
     """What a stretch of chat says, counted in people: how many talked, the share who sent the most common word
-    (convergence), how many people each reaction type covers, and how many asked for a clip. Long messages
-    copied by fewer than three people, and bots, are left out."""
+    (convergence), how many people each reaction type covers, and how many asked for a clip. Bots are left out,
+    and so is a long message that was sent more than once by fewer than three people (copy and paste)."""
     words = words or DEFAULT_WORDS
     long_by = {}
     for user, text in msgs:
         if len(text.split()) > 6:
-            long_by.setdefault(text.strip().lower(), set()).add(user)
-    kept = [(u, t) for u, t in msgs if not (len(t.split()) > 6 and len(long_by.get(t.strip().lower(), ())) < 3)]
+            long_by.setdefault(text.strip().casefold(), []).append(user)
+    def copied(t):
+        users = long_by.get(t.strip().casefold(), [])
+        return len(t.split()) > 6 and len(users) > 1 and len(set(users)) < 3
     people = {}
-    for u, t in kept:
-        if not u or is_bot(u):
+    for u, t in msgs:
+        if not u or is_bot(u) or copied(t):
             continue
-        people.setdefault(u, []).append(t)
-    out = {"people": len(people), "convergence": 0.0, "top": "", "types": {k: 0 for k in words}, "clip_people": 0}
+        people.setdefault(u, []).append(" ".join(_words(t)))
+    out = {"people": len(people), "convergence": 0.0, "top": "", "top_kind": "",
+           "types": {k: 0 for k in words}, "clip_people": 0}
     if not people:
         return out
+    phrases = {kind: [" " + " ".join(_words(p)) + " " for p in lst if _words(p)] for kind, lst in words.items()}
     seen = {}
     for u, texts in people.items():
-        toks = set(w for t in texts for w in _words(t))
+        toks = set(w for t in texts for w in t.split())
         for w in toks:
             seen[w] = seen.get(w, 0) + 1
-        joined = " " + " ".join(" ".join(_words(t)) for t in texts) + " "
-        for kind, lst in words.items():
-            if any((" " + p.lower() + " ") in joined or p.lower() in toks for p in lst):
+        for kind, lst in phrases.items():        # a phrase has to sit inside one message
+            if any(p in " " + t + " " for t in texts for p in lst):
                 out["types"][kind] += 1
+    out["clip_people"] = out["types"].get("clip", 0)
+    if not seen:
+        return out
     top = max(seen, key=seen.get)
-    out.update(top=top, convergence=seen[top] / len(people), clip_people=out["types"].get("clip", 0))
+    own = [k for k, lst in phrases.items() if " " + top + " " in lst and out["types"][k]]
+    common = max(out["types"], key=out["types"].get)
+    out.update(top=top, convergence=seen[top] / len(people),
+               top_kind=(max(own, key=out["types"].get) if own else (common if out["types"][common] else "")))
     return out
 
 

@@ -242,4 +242,51 @@ for s_ in range(1085, 1100): talk(cw, s_, 1)
 cw._watch_spikes()
 check("the history keeps only the last 15 minutes", all(t >= len(cw.db) - 900 for t, _ in cw.conv_hist) and len(cw.conv_hist) >= 1, True)
 
+# ---- task 2 fix round 1
+for label, txt in (("a lone question mark", "?"), ("emoji only", "😂😂"), ("Russian", "привет"), ("an empty message", "")):
+    try:
+        r = signals.analyze_window([(f"u{i}", txt) for i in range(5)])
+        ok = (r["convergence"] <= 1.0 and isinstance(r["top"], str))
+    except Exception as e:  # noqa: BLE001
+        ok = False
+    check(f"{label} does not crash the analysis", ok, True)
+check("nothing readable gives no convergence", signals.analyze_window([(f"u{i}", "?") for i in range(5)])["convergence"], 0.0)
+r = signals.analyze_window([(f"u{i}", "😂😂 😂") for i in range(5)])
+check("emoji are words: top 😂, everyone sent it", (r["top"], r["convergence"]), ("😂", 1.0))
+check("a custom list with emoji and Korean matches",
+      signals.analyze_window([("a", "ㅋㅋ"), ("b", "😂"), ("c", "hi")], {"laugh": ["ㅋㅋ", "😂"]})["types"]["laugh"], 2)
+check("non-Latin words converge", signals.analyze_window([(f"u{i}", "Привет!") for i in range(4)])["top"], "привет")
+check("a phrase with an apostrophe matches in any case",
+      signals.analyze_window([("a", "LET'S GO!!")], {"hype": ["let's go"]})["types"]["hype"], 1)
+check("an emote like D: still matches", signals.analyze_window([("a", "D:")], {"shock": ["d:"]})["types"]["shock"], 1)
+check("a phrase does not match across two messages of one person",
+      signals.analyze_window([("a", "let"), ("a", "go")], {"hype": ["let go"]})["types"]["hype"], 0)
+long1 = "this is my own long genuine message about the game today"
+check("a unique long message from one person stays", signals.analyze_window([("a", long1), ("b", "hi")])["people"], 2)
+check("a long message copied by 3 people stays", signals.analyze_window([(u, long1) for u in "abc"])["people"], 3)
+check("the same long text twice by one person is dropped", signals.analyze_window([("a", long1), ("a", long1)])["people"], 0)
+w = signals.analyze_window([(f"u{i}", "KEKW") for i in range(4)] + [("u5", "wtf"), ("u6", "wtf")])
+check("the kind shown is the top word's own type", w["top_kind"], "laugh")
+w = signals.analyze_window([(f"u{i}", "ok") for i in range(4)] + [("u5", "lol"), ("u6", "lol")])
+check("a top word with no type shows the most common type", w["top_kind"], "laugh")
+tm = signals.parse_irc("@user-id=3 :bob!bob@bob.tmi.twitch.tv PRIVMSG #x :did you see USERNOTICE  : that")
+check("a message that mentions USERNOTICE stays a message", tm["kind"], "msg")
+check("a notice is told from the command position", signals.parse_irc(":tmi.twitch.tv USERNOTICE #x")["kind"], "notice")
+se = session(); se.chat_on = True; se.samples = 100 * 16000
+se.take_chat_line("@msg-id=raid;user-id=9 :tmi.twitch.tv USERNOTICE #x")
+se.take_chat_line(chat_line(1, "KEKW"))
+check("raid messages stay out of the chatter counts too", (se.chat_users, se.chat_msgs), ({}, {}))
+se.samples = 140 * 16000
+se.take_chat_line(chat_line(1, "KEKW"))
+check("after a raid chatters count again", len(se.chat_users[140]), 1)
+# the word shown in why is capped
+cw = session(); cw.db = calm_db[:100]
+for s_ in range(92, 100): cw.chat_msgs[s_] = [(f"p{s_}_{i}", "x" * 80) for i in range(1)]
+cw._watch_spikes()
+check("a very long word is cut in the spike text", bool(cw.spike) and len(cw.spike["why"]) < 80, True)
+# a slow pass reads every window it missed, in order
+cw = session(); cw.db = calm_db[:100]; cw.words_read = 76
+cw._watch_spikes()
+check("missed windows are all read in order", [t for t, _ in cw.conv_hist], [84, 92, 100])
+
 print("ALL PASSED" if not fails else f"{len(fails)} failed"); sys.exit(1 if fails else 0)

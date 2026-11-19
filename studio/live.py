@@ -392,12 +392,14 @@ class Session:
                 return
             self.chat[second] += 1
             self.chat_total += 1
+            if second < self.raid_until:     # a raid's flood is neither a reaction nor a crowd of chatters
+                return
             # how many different people, not how many messages: a wave of the same
             # emotes is not a crowd getting excited
             if p["user"]:
                 self.chat_users.setdefault(second, set()).add(p["user"])
                 self.chat_kept = _trim_names(self.chat_users, second, self.chat_kept)
-            if self.settings.get("sig_chat_words", True) and p["user"] and second >= self.raid_until:
+            if self.settings.get("sig_chat_words", True) and p["user"]:
                 self.chat_msgs.setdefault(second, []).append((p["user"], p["text"]))
                 for t in [t for t in self.chat_msgs if t < second - CHAT_WORDS_KEEP]:
                     del self.chat_msgs[t]
@@ -415,25 +417,28 @@ class Session:
         if not self.settings.get("sig_chat_words", True) or n < 60:
             return
         win = max(5, min(10, int(self.settings.get("chat_window", 8) or 8)))
-        if n - self.words_read < win:
-            return
-        self.words_read = n
-        w = self.chat_window(n - win, n - 1)
-        self.conv_hist.append((n, w["convergence"]))
-        while self.conv_hist and self.conv_hist[0][0] < n - 900:
+        if not self.words_read or n - self.words_read > CHAT_WORDS_KEEP:
+            self.words_read = n - win          # first time, or far behind: nothing older than this is kept anyway
+        while self.words_read + win <= n:      # a slow pass reads every window it missed, in order
+            self.words_read += win
+            self._read_chat_window(self.words_read, win)
+
+    def _read_chat_window(self, end, win):
+        w = self.chat_window(end - win, end - 1)
+        self.conv_hist.append((end, w["convergence"]))
+        while self.conv_hist and self.conv_hist[0][0] < end - 900:
             self.conv_hist.pop(0)
         jz = float(self.settings.get("jump_z", 3.5))
         why, strength = None, 0.0
         if w["clip_people"] >= 3:
             why, strength = f"Chat: {w['clip_people']} people asked for a clip", min(1.0, w["clip_people"] / 6)
-        elif w["people"] >= 5 and w["convergence"] >= 0.5:
+        elif w["people"] >= 5 and w["convergence"] >= 0.5 and w["top"]:
             said = round(w["convergence"] * w["people"])
-            kinds = [k for k, c in sorted(w["types"].items(), key=lambda kv: -kv[1]) if c >= 0.5 * w["people"] and k != "clip"]
-            why = f"Chat: {said} people said {w['top'].upper()}" + (f" ({kinds[0]})" if kinds else "")
+            why = f"Chat: {said} people said {w['top'][:25].upper()}" + (f" ({w['top_kind']})" if w["top_kind"] else "")
             strength = w["convergence"]
-        if why and not self.spike and n - self.last_spike >= self.AUTO_GAP:
-            self.spike = {"t": float(n - 3), "why": why, "z": jz + 2 * strength, "chat": w}
-            self.last_spike = n
+        if why and not self.spike and end - self.last_spike >= self.AUTO_GAP:
+            self.spike = {"t": float(end - 3), "why": why, "z": jz + 2 * strength, "chat": w}
+            self.last_spike = end
             self.spikes += 1
 
     def _chat_spike(self, s, e):
