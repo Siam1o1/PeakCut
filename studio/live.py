@@ -11,7 +11,7 @@ from pathlib import Path
 
 import numpy as np
 
-from . import alerts, auth, brain, config, creators, ctx, facecam, games, jobs, load, media, picks, profiles, signals, transcribe, twitch, usage
+from . import alerts, auth, brain, config, creators, ctx, facecam, games, jobs, load, media, memory, picks, profiles, signals, transcribe, twitch, usage
 
 # ":username!user@host PRIVMSG #channel :the message"
 
@@ -142,6 +142,11 @@ class Session:
         self.raid_until = 0                  # stream second until which chat words are not kept (a raid just arrived)
         self.words_read = 0                  # the second chat was last read for what it says
         self.conv_hist = []                  # (second, convergence) of each chat window read, last 15 minutes
+        self.seed = {}                       # the creator's saved normal loudness and chat, used until this stream has its own
+        try:
+            self.seed = memory.seed(job.get("creator")) if job.get("creator") else {}
+        except Exception:  # noqa: BLE001
+            pass
         self.lag = 5                         # seconds chat takes to react after the streamer, measured every 5 minutes
         self.lag_at = 0                      # the second the lag was last measured
         self.chat_total = 0
@@ -631,7 +636,7 @@ class Session:
         if sum(series[-now_len:]) / now_len < signals.per_viewer(1.5, v):
             return 0.0
         floor = signals.per_viewer(self.CHAT_FLOOR, v)   # half a chatter a second: below that is just quiet
-        return min(signals.series_z(series, now_len=now_len, exclude=now_len + 5, floor=floor), self.Z_CAP)
+        return min(signals.series_z(series, now_len=now_len, exclude=now_len + 5, seed=self.seed.get("chat"), floor=floor), self.Z_CAP)
 
     def chat_people(self):
         """Second -> how many different people were talking, where that is known.
@@ -725,12 +730,12 @@ class Session:
         value and a middle distance are used, so a long shout earlier does not hide the next one."""
         with self.lock:
             n = len(self.db)
-            if n < 60:
+            if n < (20 if self.seed else 60):      # a saved normal lets it start sooner
                 self.base = {"warming": True}
                 return
             loud = 10 ** (np.array(self.db[max(0, n - 930):], dtype=np.float64) / 20)   # plain level, not decibels
             zc = self._chat_z(n - 1)      # the seconds n-5..n-1: the one still filling is left out, as for loudness
-        zl = min(signals.series_z(loud), self.Z_CAP)
+        zl = min(signals.series_z(loud, seed=self.seed.get("loud")), self.Z_CAP)
         self.zs = {"loud": zl, "chat": zc}
         jz = float(self.settings.get("jump_z", 3.5))
         self.base = {"loud_z": round(zl, 1), "chat_z": round(zc, 1), "jump_z": jz}
@@ -837,7 +842,7 @@ class Session:
         try:
             cands, tok = brain.judge_transcript(win, ws, now, title, up, st["min_len"], st["max_len"], prev,
                                                 n=1 if every <= 2 else 2, must=must, game=self._game(),
-                                                timeout=config.LIVE_AI_TIMEOUT)  # Auto (0) asks for one
+                                                timeout=config.LIVE_AI_TIMEOUT, profile=self._profile())  # Auto (0) asks for one
         except Exception as e:  # noqa: BLE001
             self.job["ai"]["last_error"] = str(e)[-200:]
             if self.pick and window:      # no AI: a jump in loudness or chat, or "clip it", is still worth listing
@@ -869,7 +874,7 @@ class Session:
             chat = [self.chat.get(t, 0) for t in range(lo, hi)] if (self.chat_on or self.chat_total) else None
             unit = "messages"
         try:
-            sig, tok2 = brain.judge_signals(z[lo:hi], chat, lo, now, unit=unit, timeout=config.LIVE_AI_TIMEOUT)
+            sig, tok2 = brain.judge_signals(z[lo:hi], chat, lo, now, unit=unit, timeout=config.LIVE_AI_TIMEOUT, profile=self._profile())
             self.checks += 1
             self.tokens += tok2
         except Exception as e:  # noqa: BLE001
@@ -919,6 +924,21 @@ class Session:
     def _label(result):
         """A short fixed label for the log: never the text of an error, which could hold anything."""
         return "ai error" if result.startswith("AI error") else result[:signals.MAX_TEXT]
+
+    def _profile(self):
+        """What earlier streams showed about this creator, as untrusted text for the judges' prompts."""
+        try:
+            return memory.prompt_block(self.job.get("creator"))
+        except Exception:  # noqa: BLE001
+            return ""
+
+    def _learn(self):
+        """After the stream, on the live worker: update what is known about this creator. Never raises."""
+        try:
+            if self.settings.get("sig_memory", True) is not False:
+                memory.after_stream(self)
+        except Exception:  # noqa: BLE001
+            pass
 
     def _log(self):
         try:
@@ -1197,6 +1217,8 @@ class Session:
             SESSIONS.pop(self.job["id"], None)
 
         jobs.submit_live(cleanup)
+        if not failed:
+            jobs.submit_live(self._learn)          # after the clips are made, and never in the way of Stop
 
 
 def recover(job):

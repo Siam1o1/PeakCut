@@ -21,7 +21,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Redirect
 
 from . import admin as admins
 from . import account, load
-from . import (accounts, ai, alerts, auth, brain, config, creators, ctx, db, jobs, live, media, picks, posting,
+from . import (accounts, ai, alerts, auth, brain, config, creators, ctx, db, jobs, live, media, memory, picks, posting,
                profiles, render, safe, transcribe, usage)
 
 from . import tools as _tools  # noqa: E402
@@ -1213,6 +1213,38 @@ def edit_creator(cid: str, body: dict = Body(...)):
     if body.get("auto_watch") and c.get("auto_watch") and not s:
         live.check_now(cid)    # if they are live right now, recording starts within seconds
     return c
+
+
+def _behavior_view(cid):
+    text, nums = memory.load(cid)
+    return {"text": text, "nums": nums, "updated": memory.updated(cid)}
+
+
+@app.get("/api/creators/{cid}/behavior")
+def get_behavior(cid: str):
+    if not creators.get(cid):
+        raise HTTPException(404, "No such creator")
+    return _behavior_view(cid)
+
+
+@app.put("/api/creators/{cid}/behavior")
+def put_behavior(cid: str, body: dict = Body(...)):
+    if not creators.get(cid):
+        raise HTTPException(404, "No such creator")
+    text = body.get("text")
+    if not isinstance(text, str):
+        raise HTTPException(400, "Send the profile as text.")
+    text = memory.trim(re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", " ", text)[:8000])
+    memory.save(cid, text, memory.load(cid)[1])
+    return _behavior_view(cid)
+
+
+@app.delete("/api/creators/{cid}/behavior")
+def reset_behavior(cid: str):
+    if not creators.get(cid):
+        raise HTTPException(404, "No such creator")
+    memory.reset(cid)
+    return _behavior_view(cid)
 
 
 @app.post("/api/creators/{cid}/live")

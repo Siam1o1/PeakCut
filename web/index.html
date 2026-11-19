@@ -1932,7 +1932,11 @@ function drawCreatorForm() {
         <label class="f">Hype words<input data-k="words_hype" value="${esc(c.words_hype || "")}" placeholder="${esc(DEFAULT_WORDS.hype)}"></label>
         <label class="f">Clip words<input data-k="words_clip" value="${esc(c.words_clip || "")}" placeholder="${esc(DEFAULT_WORDS.clip)}"></label>
         <label class="f">Negative words<input data-k="words_negative" value="${esc(c.words_negative || "")}" placeholder="${esc(DEFAULT_WORDS.negative)}"></label>
-        <small class="sub span" style="font-weight:400">Separate words with commas. Left empty, the words shown are used.</small></div></div>
+        <small class="sub span" style="font-weight:400">Separate words with commas. Left empty, the words shown are used.</small>
+        <label class="sw span"><input type="checkbox" data-k="sig_memory" ${c.sig_memory === false ? "" : "checked"}><span>Learn this creator's habits<small>After each stream, PeakCut notes how they react to big moments, their catchphrases and what a normal stretch sounds like, and gives that to the AI next time. It never keeps what chat said.</small></span></label>
+        <div class="span"><b>What PeakCut learned about this creator</b> <span class="sub" id="memdate"></span>
+          <textarea id="memtext" rows="8" style="width:100%;margin-top:6px" placeholder="Nothing yet. This fills in after a stream with moments you cut, edit or post. You can write in it too."></textarea>
+          <div style="margin-top:6px;display:flex;gap:8px"><button class="btn" data-act="memsave">Save</button><button class="btn ghost" data-act="memreset">Reset</button></div></div></div></div>
     <div class="card"><h2>Clips</h2><p class="help">How this creator's clips look.</p>
       <div class="fields"><label class="sw span"><input type="checkbox" data-k="captions" data-caption-toggle ${c.captions === false ? "" : "checked"}>Generate captions</label>
         <label class="f">Caption style<select data-k="style" data-caption-style ${c.captions === false ? "disabled" : ""}>${opts(S.status.styles, c.style)}</select></label>
@@ -1954,7 +1958,11 @@ function drawCreatorForm() {
     <div class="card danger-card"><h2>Delete this creator</h2><p class="help">Removes ${esc(c.name)}, their settings, posting rules and activity log. You choose whether their videos and clips are kept (under All videos) or deleted too. This cannot be undone.</p>
       <button class="btn danger" data-act="delcreator">${ic("trash")}Delete creator</button></div>
     <div class="savebar" id="savebar"><span>${ic("warn")}You have unsaved changes</span><button class="btn ghost" data-act="cdiscard">Discard</button><button class="btn primary" data-act="csave">${ic("check")}Save changes</button></div>`;
+  loadBehavior();
 }
+const showBehavior = d => { const t = $("#memtext"); if (!t) return; t.value = d.text || ""; $("#memdate").textContent = d.updated ? "Updated " + d.updated : ""; };
+async function loadBehavior() { try { showBehavior(await api(`/api/creators/${creatorId()}/behavior`)); } catch (e) {} }
+
 const creatorForm = () => { const d = {}; $$("#cform [data-k]").forEach(i => { if (i.type === "radio") { if (i.checked) d[i.dataset.k] = i.value; } else d[i.dataset.k] = i.type === "checkbox" ? i.checked : i.value; }); d.accounts = $$("#cform [data-acc]:checked").map(i => i.value); d.sig_weights = {}; $$("#cform [data-w]").forEach(i => { if (i.value !== "") d.sig_weights[i.dataset.w] = Number(i.value); }); return d; };
 const dirty = on => $("#savebar")?.classList.toggle("on", on);
 async function saveCreator(quiet) {
@@ -2648,6 +2656,11 @@ document.addEventListener("click", async e => {
       const r = await send("/api/bulk/delete", {videos: jobsSel, clips: clipsSel});
       sel().clear(); await tick(); render();
       return toast(`Deleted ${r.videos} video${r.videos === 1 ? "" : "s"} and ${r.clips} clip${r.clips === 1 ? "" : "s"}` + (r.skipped ? `. ${r.skipped} still being made were left alone.` : ""), "ok");
+    }
+    if (a === "memsave") { showBehavior(await send(`/api/creators/${creatorId()}/behavior`, {text: $("#memtext").value}, "PUT")); return toast("Saved", "ok"); }
+    if (a === "memreset") {
+      if (!await ask("Reset what PeakCut learned?", "This clears the notes and the saved numbers for this creator. They build up again after the next streams.", "Reset", true)) return;
+      showBehavior(await api(`/api/creators/${creatorId()}/behavior`, {method: "DELETE"})); return toast("Cleared", "ok");
     }
     if (a === "delcreator") {
       const c = S.creators.find(x => x.id === (d.c || creatorId())); if (!c) return;

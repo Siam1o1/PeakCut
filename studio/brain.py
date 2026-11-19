@@ -472,14 +472,15 @@ SIG_SCHEMA = {
 
 
 def judge_transcript(words, start, now, title="", uploader="", min_len=15, max_len=60, existing=(), n=2, must=False,
-                    game=None, timeout=None):
-    """Judge 1: words only. Returns (clips, tokens)."""
+                    game=None, timeout=None, profile=""):
+    """Judge 1: words only. `profile` is what earlier streams showed about this creator (already wrapped as untrusted
+    text). Returns (clips, tokens)."""
     lines = make_lines(words)
     if len(lines) < 3:
         return [], 0
     prompt = (TRANSCRIPT_JUDGE.format(title=_safe(title) or "unknown", uploader=_safe(uploader) or "unknown", start=start, now=now,
                                       n=n, must=MUST_PICK if must else NOT_MUST)
-              + _game_rules(game)
+              + _game_rules(game) + (profile or "")
               + RULES.format(min_len=min_len, max_len=max_len, transcript=_fmt(lines)))
     out, _model, spent = ask_ai(prompt, purpose="Live: words judge", timeout=timeout)
     clips = []
@@ -494,7 +495,7 @@ def judge_transcript(words, start, now, title="", uploader="", min_len=15, max_l
     return clips, spent
 
 
-def judge_signals(z, chat, start, now, unit="messages", timeout=None):
+def judge_signals(z, chat, start, now, unit="messages", timeout=None, profile=""):
     """Judge 2: loudness and chat activity only, no words. z and chat are per second from `start`.
     `unit` says whether the chat numbers are messages or people. Returns (moments, tokens)."""
     rows = []
@@ -513,7 +514,7 @@ def judge_signals(z, chat, start, now, unit="messages", timeout=None):
         chat_note=f"\nC={word} in that slice (usual is about {avg:.1f})." if has_chat else
         "\nChat is not available for this stream.",
         chat_hint=f"a burst of {word} right after something happened, " if has_chat else "",
-        start=start, now=now, lines="\n".join(rows))
+        start=start, now=now, lines="\n".join(rows)) + (profile or "")
     out, _model, spent = ask_ai(prompt, SIG_SCHEMA, purpose="Live: reaction judge", timeout=timeout)
     moments = [{"start": float(m["start"]), "end": float(m["end"]), "score": int(m.get("score", 0)),
                 "reason": str(m.get("reason", ""))} for m in out if isinstance(m, dict)]
