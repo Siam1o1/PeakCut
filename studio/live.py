@@ -239,9 +239,9 @@ class Session:
         while not self.stop_flag.is_set() and not self.ended:
             try:
                 v = profiles.live_shared(profiles.platform_of(url), url).get("viewers")
-                self.viewers = int(v) if v else None
-                with self.lock:
-                    if self.viewers:
+                if v:           # a poll that finds nothing keeps the last known count, so units never change midway
+                    self.viewers = int(v)
+                    with self.lock:
                         self.viewer_log.append((int(self.samples / SR), self.viewers))
                         del self.viewer_log[:-1000]
             except Exception:  # noqa: BLE001
@@ -380,13 +380,18 @@ class Session:
             self.stop_flag.wait(5)
 
     def _chat_spike(self, s, e):
-        """True if chat was at least 3x busier than usual during (and just after) these seconds.
+        """True if chat was clearly busier than usual during (and just after) these seconds: the busiest five seconds anywhere in s to
+        e+6, against the 15 minutes before them (the old rule: at least 3x busier than the stream's average).
 
         The crowd is counted as people, not messages: ten people saying "GG" is a reaction, one
         person saying "GG" ten times is a bot."""
         elapsed = self.samples / SR
         if self._baseline():
-            return self._chat_z(int(e) + 6) >= float(self.settings.get("jump_z", 3.5))
+            # every five-second stretch inside s..e+6 is judged against the 15 minutes before it: the best one counts,
+            # so a burst that had faded by the end of the stretch is still seen
+            last = int(e) + 6
+            best = max(self._chat_z(t) for t in range(min(int(s) + 4, last), last + 1))
+            return best >= float(self.settings.get("jump_z", 3.5))
         if not self.chat_total or elapsed < 60:
             return False
         avg = self.chat_total / elapsed
@@ -402,7 +407,7 @@ class Session:
         return p_rate >= max(2.0, 1.5 * p_avg)
 
     def _chat_series(self, end, length):
-        """Different people talking in each second up to `end`, per 1,000 viewers when the viewer count is known.
+        """(the series, the viewer count its last second was scaled by). Different people talking in each second up to `end`, per 1,000 viewers when the viewer count is known.
         None when there is no chat to read. Where names cannot be told, messages are counted instead."""
         people = self.chat_people()
         rng = range(max(0, end - length + 1), end + 1)
@@ -414,22 +419,23 @@ class Session:
                 known, i = log[i][1], i + 1
             at.append(known)
         if people:
-            return [signals.per_viewer(len(people.get(t, ())), v) for t, v in zip(rng, at)]
+            return [signals.per_viewer(len(people.get(t, ())), v) for t, v in zip(rng, at)], at[-1]
         if self.chat_on or self.chat_total:
-            return [signals.per_viewer(self.chat.get(t, 0), v) for t, v in zip(rng, at)]
-        return None
+            return [signals.per_viewer(self.chat.get(t, 0), v) for t, v in zip(rng, at)], at[-1]
+        return None, None
 
-    def _chat_z(self, end):
-        """How unusual chat is in the five seconds ending at second `end` (included), against the 15 minutes before. A chat that is nearly
-        silent has almost no spread, so a couple of messages would score huge: that needs at least a small crowd."""
-        series = self._chat_series(end, 930)
+    def _chat_z(self, end, now_len=5):
+        """How unusual chat is in the `now_len` seconds ending at second `end` (included), against the 15 minutes
+        before them. A chat that is nearly silent has almost no spread, so a couple of messages would score huge:
+        that needs at least a small crowd. The viewer count used for the crowd and the floor is the one the series
+        itself was scaled by, so they are always in the same units."""
+        series, v = self._chat_series(end, 920 + now_len + 10)
         if not series:
             return 0.0
-        crowd = signals.per_viewer(1.5, self.viewers) * 5
-        if sum(series[-5:]) < crowd:
+        if sum(series[-now_len:]) / now_len < signals.per_viewer(1.5, v):
             return 0.0
-        floor = signals.per_viewer(self.CHAT_FLOOR, self.viewers)   # half a chatter a second: below that is just quiet
-        return min(signals.series_z(series, floor=floor), self.Z_CAP)
+        floor = signals.per_viewer(self.CHAT_FLOOR, v)   # half a chatter a second: below that is just quiet
+        return min(signals.series_z(series, now_len=now_len, exclude=now_len + 5, floor=floor), self.Z_CAP)
 
     def chat_people(self):
         """Second -> how many different people were talking, where that is known.

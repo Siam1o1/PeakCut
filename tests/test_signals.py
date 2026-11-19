@@ -125,7 +125,7 @@ check("a thin chat (1/s) over empty does not count", (lambda s: (s.chat_users.up
 se = session(); se.chat_on = True
 se.chat_users = {t: {f"p{t}_{i}" for i in range(2)} for t in range(0, 100)}
 se.viewer_log = [(0, 1000), (50, 2000)]
-ser = se._chat_series(99, 100)
+ser = se._chat_series(99, 100)[0]
 check("a second before the count changed uses the old count", (ser[10], ser[90]), (2.0, 1.0))
 # a due must-clip bypasses the hourly limit; a pick session is limited too
 se = session(live_per_hour=1); se.job["clips"] = [{"score": 0, "made_at": 0}]
@@ -139,5 +139,29 @@ se.words = [{"w": "word", "s": float(i), "e": i + 0.5} for i in range(40)]; se.t
 se.top.admit(9.0, _time.time())
 se._ai_check((0.0, 40.0), "Jump: loudness z 4.0", 4.0)
 check("pick mode: a second, weaker jump in the hour is passed over", se.verdicts[-1]["result"], "Passed over: stronger moments this hour")
+
+# a burst inside s..e that has faded by e+2 still counts
+se = session(); se.samples = 1005 * 16000; fill_chat(se, 0.8, 1005, seed=5)
+for t in range(1000, 1005): se.chat_users.pop(t, None)
+se.chat_users.update({t: {f"f{t}_{i}" for i in range(8)} for t in range(990, 997)})
+check("a burst inside s..e that faded by e+2 still counts", se._chat_spike(990, 996), True)
+check("...and quiet chat over the same stretch does not", session()._chat_spike(990, 996), False)
+# a count that goes missing after being known does not change the units
+se = session(); fill_chat(se, 0.8, 1005, burst=6); se.samples = 1005 * 16000
+se.viewer_log = [(0, 2000)]; se.viewers = 2000
+z1 = se._chat_z(1004)
+se.viewers = None
+check("a viewer count that becomes None keeps z the same", (z1 > 0, se._chat_z(1004) == z1), (True, True))
+se = session(); se.viewers = 7
+def _none(*a):
+    se.stop_flag.set()          # one round only
+    return {"viewers": None}
+_old = live.profiles.live_shared
+live.profiles.live_shared = _none
+try:
+    se._watch_viewers()
+finally:
+    live.profiles.live_shared = _old
+check("a poll that finds nothing does not clear a known count", se.viewers, 7)
 
 print("ALL PASSED" if not fails else f"{len(fails)} failed"); sys.exit(1 if fails else 0)
